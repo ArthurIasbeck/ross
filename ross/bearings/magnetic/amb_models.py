@@ -236,6 +236,7 @@ def rotor_example_amb_complex_controllers(ambs=True):
     )
     k_amp = 1.0
     k_sense = 1.0
+
     bearing_elements = [
         MagneticBearingElement(
             n=n_list[0],
@@ -439,7 +440,7 @@ def rotor_example_amb_general_controllers(controller_transfer_function=None):
     return Rotor(shaft_elements, disk_elements, bearing_elements)
 
 
-def rotor_example_amb_simple():
+def rotor_example_amb_simple(ambs=True):
     steel = Material(name="steel", rho=7850, E=1.9e11, Poisson=0.30)
 
     L = 0.1
@@ -465,10 +466,10 @@ def rotor_example_amb_simple():
     )
 
     amb_params = {
-        "g0": 1e-3,
-        "i0": 1.0,
-        "ag": 1e-4,
-        "nw": 200,
+        "g0": 5.7e-5,
+        "i0": 1.5,
+        "ag": 1e-3,
+        "nw": 250,
         "kp_pid": 1e5,
         "kd_pid": -1e-5,
         "ki_pid": 2e-1,
@@ -476,10 +477,14 @@ def rotor_example_amb_simple():
         "k_sense": 1.0,
     }
 
-    bearings = [
-        MagneticBearingElement(n=n, **amb_params, tag=f"AMB_{n}")
-        for n in [1, n_elements - 1]
-    ]
+    if ambs:
+        bearings = [
+            MagneticBearingElement(n=n, **amb_params, tag=f"AMB_{n}")
+            # for n in [1, n_elements - 1]
+            for n in [1]
+        ]
+    else:
+        bearings = []
 
     rotor = Rotor(
         shaft_elements=shaft_elements, disk_elements=[disk], bearing_elements=bearings

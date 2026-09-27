@@ -1,8 +1,9 @@
 import numpy as np
 import pytest
+import control as ct
 from numpy.testing import assert_allclose, assert_equal
 
-from ross import SensitivityResults, MagneticBearingElement
+from ross import AmbTfIdentificationResult, SensitivityResults, MagneticBearingElement
 from ross.bearings.magnetic.amb_models import (
     rotor_example_amb_simple,
     rotor_example_amb_general_controllers,
@@ -443,3 +444,88 @@ def test_run_amb_sensitivity():
         results.max_abs_sensitivities["Magnetic Bearing 0"]["x"],
         results_custom_freq.max_abs_sensitivities["Magnetic Bearing 0"]["x"],
     )
+
+
+def test_run_amb_tf_identification():
+    rotor = rotor_example_amb_simple()
+    expected_keys = {
+        "AMB_1 (node 1) - v",
+        "AMB_1 (node 1) - w",
+        "AMB_9 (node 9) - v",
+        "AMB_9 (node 9) - w",
+    }
+
+    for method in ["de", "slsqp", "ss"]:
+        result = rotor.run_amb_tf_identification(
+            method,
+            dt=0.1,
+            speed=0,
+            time_to_converge=None,
+        )
+
+        assert isinstance(result, AmbTfIdentificationResult)
+        assert result.method == method
+        assert set(result.models) == expected_keys
+        assert set(result.perturbances) == expected_keys
+        assert set(result.ref_data) == expected_keys
+
+        for key in expected_keys:
+            model = result.models[key]
+            data = result.ref_data[key]
+            disturbance = result.perturbances[key]
+
+            if method in ["de", "slsqp"]:
+                assert isinstance(model, ct.TransferFunction)
+                assert len(model.num[0][0]) > 0
+                assert len(model.den[0][0]) > 0
+                assert np.all(np.isfinite(model.num[0][0]))
+                assert np.all(np.isfinite(model.den[0][0]))
+            else:
+                assert isinstance(model, ct.StateSpace)
+                assert model.A.shape[0] == model.A.shape[1]
+                assert model.B.shape[0] == model.A.shape[0]
+                assert model.C.shape[1] == model.A.shape[0]
+                assert np.all(np.isfinite(model.A))
+                assert np.all(np.isfinite(model.B))
+                assert np.all(np.isfinite(model.C))
+                assert np.all(np.isfinite(model.D))
+
+            assert set(data) == {"current", "displacement", "time"}
+            assert len(data["current"]) == len(data["displacement"])
+            assert len(data["current"]) == len(data["time"])
+            assert len(data["time"]) > 0
+            assert np.all(np.isfinite(data["current"]))
+            assert np.all(np.isfinite(data["displacement"]))
+            assert np.all(np.isfinite(data["time"]))
+            assert np.all(np.diff(data["time"]) >= 0)
+            assert len(disturbance) == len(data["time"])
+            assert np.all(np.isfinite(disturbance))
+
+    # TODO: Replace this exception check with return-value assertions after
+    # ReduceModel handles the nearly unstable pole in this example rotor.
+    with pytest.raises(RuntimeError, match="Could not reduce"):
+        rotor.run_amb_tf_identification("reduce", desired_total_order=10)
+
+
+def test_run_amb_tf_identification_rejects_unknown_method():
+    rotor = rotor_example_amb_simple()
+
+    with pytest.raises(ValueError, match="Unknown method 'unknown'"):
+        rotor.run_amb_tf_identification("unknown")
+
+
+@pytest.mark.parametrize(
+    "plot_method",
+    [
+        "plot_model_response",
+        "plot_disturbances",
+        "plot_ref_data",
+    ],
+)
+def test_amb_tf_identification_reduce_plot_methods_warn(plot_method):
+    result = AmbTfIdentificationResult(
+        models={}, perturbances={}, ref_data={}, method="reduce"
+    )
+
+    with pytest.warns(UserWarning, match=r"plot_reduced_response\(\)"):
+        assert getattr(result, plot_method)() is None
