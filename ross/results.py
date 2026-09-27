@@ -8107,12 +8107,14 @@ class AmbTfIdentificationResult(Results):
     # TODO: Melhorar as docstrings dos métodos de plot
     # TODO: Guardar o fitness no resultado
 
-    def __init__(self, models, perturbances, ref_data, method):
+    def __init__(self, models, perturbances, ref_data, method, channel_names=None):
         self.models = models
         self.perturbances = perturbances
         self.ref_data = ref_data
         self.method = method
+        self.channel_names = channel_names
 
+    # TODO: Reduzir a complexidade cognitiva dessa função
     def plot_reduced_frequency_response(
         self,
         frequency_units="rad/s",
@@ -8160,8 +8162,22 @@ class AmbTfIdentificationResult(Results):
         reduce_mag, _, _ = ct.frequency_response(self.models["reduced_model"], omega)
 
         num_rows, num_columns = reduce_mag.shape[:2]
+        if (
+            self.channel_names is not None
+            and len(self.channel_names) == num_rows
+            and num_rows == num_columns
+        ):
+            input_names = self.channel_names
+            output_names = [
+                name.replace("Current ", "Displacement ")
+                for name in self.channel_names
+            ]
+        else:
+            input_names = [f"Current {index + 1}" for index in range(num_columns)]
+            output_names = [f"Displacement {index + 1}" for index in range(num_rows)]
+
         subplot_titles = [
-            f"Current {row + 1} → Displacement {column + 1}"
+            f"{input_names[row]} →<br>{output_names[column]}"
             for row in range(num_rows)
             for column in range(num_columns)
         ]
@@ -8179,8 +8195,12 @@ class AmbTfIdentificationResult(Results):
 
         for row in range(num_rows):
             for column in range(num_columns):
-                original_mag_ij = original_mag[row, column, :]
-                reduce_mag_ij = reduce_mag[row, column, :]
+                # python-control stores MIMO responses as
+                # [output, input, frequency]. Rows in this figure represent
+                # inputs and columns represent outputs, so the first two
+                # indices must be transposed here.
+                original_mag_ij = original_mag[column, row, :]
+                reduce_mag_ij = reduce_mag[column, row, :]
 
                 original_mag_db = 20 * np.log10(
                     np.maximum(original_mag_ij, np.finfo(float).tiny)

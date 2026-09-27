@@ -504,7 +504,7 @@ def test_run_amb_tf_identification():
     # TODO: Replace this exception check with return-value assertions after
     # ReduceModel handles the nearly unstable pole in this example rotor.
     with pytest.raises(RuntimeError, match="Could not reduce"):
-        rotor.run_amb_tf_identification("reduce", desired_total_order=10)
+        rotor.run_amb_tf_identification("reduce", num_modes=10)
 
 
 def test_run_amb_tf_identification_rejects_unknown_method():

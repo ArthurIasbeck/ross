@@ -25,6 +25,13 @@ class AmbTimeResponse:
     weight : bool, optional
         Whether to include gravitational forces in the simulation.
         Defaults to True.
+    disturbance : array_like, optional
+        Magnetic-bearing disturbance input applied during the simulation.
+    num_modes : int, optional
+        Number of modes retained in the modal representation. If set to ``-1``,
+        all modes are retained. Default is ``-1``.
+    x_0 : float, optional
+        Initial displacement used for the rotor state. Default is 0.
     """
 
     def __init__(self, rotor, t, speed, F=None, **kwargs):
@@ -41,6 +48,16 @@ class AmbTimeResponse:
             Rotor speed in rad/s.
         F : array_like, optional
             External forces applied to the rotor.
+        disturbance : array_like, optional
+            Magnetic-bearing disturbance input applied during the simulation.
+        weight : bool, optional
+            Whether to include gravitational forces in the simulation.
+            Default is True.
+        num_modes : int, optional
+            Number of modes retained in the modal representation. If set to ``-1``,
+            all modes are retained. Default is ``-1``.
+        x_0 : float, optional
+            Initial displacement used for the rotor state. Default is 0.
 
         Examples
         --------
