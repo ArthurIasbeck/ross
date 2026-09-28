@@ -8,6 +8,10 @@ from ross.bearings.magnetic.amb_models import (
     rotor_example_amb_simple,
     rotor_example_amb_general_controllers,
 )
+from ross.bearings.magnetic.amb_system_identification import (
+    AmbSystemIdentification,
+)
+from ross.bearings.magnetic.system_identification import SystemIdentification
 from ross.probe import Probe
 from ross.units import Q_
 
@@ -461,6 +465,10 @@ def test_run_amb_tf_identification():
             dt=0.1,
             speed=0,
             time_to_converge=None,
+            disturbance_changing_time=0.2,
+            disturbance_steady_time=0.2,
+            disturbance_n_steps=2,
+            disturbance_step_amplitude=10e-6,
         )
 
         assert isinstance(result, AmbTfIdentificationResult)
@@ -512,6 +520,55 @@ def test_run_amb_tf_identification_rejects_unknown_method():
 
     with pytest.raises(ValueError, match="Unknown method 'unknown'"):
         rotor.run_amb_tf_identification("unknown")
+
+
+def test_system_identification_ss_accepts_single_and_multiple_p_values(monkeypatch):
+    t_ref = np.arange(10, dtype=float)
+    i_ref = np.ones_like(t_ref)
+    y_ref = np.linspace(0.0, 1.0, t_ref.size)
+    identification = SystemIdentification(i_ref, y_ref, t_ref)
+
+    monkeypatch.setattr(
+        identification,
+        "_simulate_with_optimal_x0",
+        lambda A, B: (np.zeros((t_ref.size, 2)), np.zeros(2)),
+    )
+
+    identification.identify(method="ss", p=2)
+    assert identification.p == 2
+
+    identification.identify(method="ss", p=[2, 3])
+    assert identification.p in [2, 3]
+
+
+def test_run_amb_tf_identification_forwards_p(monkeypatch):
+    rotor = rotor_example_amb_simple()
+    identification = AmbSystemIdentification(rotor)
+    forwarded = {}
+
+    def fake_data_driven_identification(*args):
+        forwarded["p"] = args[-1]
+
+    monkeypatch.setattr(
+        identification,
+        "_run_amb_tf_data_driven_identification",
+        fake_data_driven_identification,
+    )
+
+    identification.run_amb_tf_identification("ss", p=[2, 4])
+
+    assert forwarded["p"] == [2, 4]
+
+
+@pytest.mark.parametrize("p", [[], [0], [1.5]])
+def test_system_identification_ss_rejects_invalid_p_values(p):
+    t_ref = np.arange(10, dtype=float)
+    identification = SystemIdentification(
+        np.ones_like(t_ref), np.ones_like(t_ref), t_ref
+    )
+
+    with pytest.raises(ValueError, match="'p'"):
+        identification.identify(method="ss", p=p)
 
 
 @pytest.mark.parametrize(

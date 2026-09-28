@@ -2,10 +2,7 @@ import time
 
 import control as ct
 import numpy as np
-from matplotlib import pyplot as plt  # TODO: Remover depois
 from scipy.optimize import differential_evolution, minimize
-
-# TODO: Remover os prints (deixar só os essenciais)
 
 rng = np.random.default_rng(int(time.time()))
 
@@ -212,13 +209,6 @@ class SystemIdentification:
             err = y - self.y_ref
             cost = 0.5 * np.sum(err**2)
 
-            # TODO: Remover depois
-            # print(f"cost = {cost}")
-            # plt.figure()
-            # plt.plot(y)
-            # plt.plot(self.y_ref)
-            # plt.show()
-
         self.last_cost = cost
         return cost
 
@@ -302,7 +292,7 @@ class SystemIdentification:
         """
         return simulate_with_optimal_x0(A, B, self.t_ref, self.i_ref, self.y_ref)
 
-    def identify(self, method="de"):
+    def identify(self, method="de", **kwargs):
         """
         Run the identification algorithm.
 
@@ -316,6 +306,12 @@ class SystemIdentification:
             The identification method to use. Options are 'de' (Differential
             Evolution), 'slsqp' (SLSQP optimization), or 'ss' (State-Space
             identification). Defaults to 'de'.
+        p : int or array_like of int, optional
+            State-space prediction window length or candidate window lengths.
+            The window determines how many subsequent input samples are
+            considered by the model when making a prediction. Larger values
+            consider more inputs. This parameter is used only when
+            ``method='ss'`` and defaults to 20.
 
         Returns
         -------
@@ -393,8 +389,24 @@ class SystemIdentification:
             return G
 
         elif self._last_method == "ss":
+            p_values = kwargs.get("p", 20)
+            if np.isscalar(p_values):
+                p_values = [p_values]
+            else:
+                p_values = list(p_values)
+
+            if not p_values:
+                raise ValueError("'p' must contain at least one positive integer.")
+            if any(
+                isinstance(p_value, (bool, np.bool_))
+                or not isinstance(p_value, (int, np.integer))
+                or p_value <= 0
+                for p_value in p_values
+            ):
+                raise ValueError("'p' must contain only positive integers.")
+
             print(
-                "Starting identification using State-Space (Multi-step OLS, p=10 to 300)..."
+                f"Starting identification using State-Space (Multi-step OLS, p={p_values})..."
             )
 
             tic = time.time()
@@ -403,20 +415,16 @@ class SystemIdentification:
             N = self.t_ref.size
 
             costs = []
-            p_range = range(10, 300)  # TODO: Deixar para o usuário decidir essa faixa
+            p_range = p_values
 
             best_cost = np.inf
             best_p = None
             best_A = None
             best_B = None
 
-            tic = time.time()
             for p in p_range:
-                # TODO: Remover depois
-                print(f"p={p} | {time.time() - tic:.2f} s")
-                tic = time.time()
                 if p >= N:
-                    break
+                    continue
 
                 Y_X = np.zeros((N - p, 2))
                 Phi_X = np.zeros((N - p, 2 + p))
@@ -457,21 +465,17 @@ class SystemIdentification:
                     best_A = A
                     best_B = B
 
+            if best_p is None:
+                raise ValueError(
+                    "All values in 'p' must be smaller than the data length."
+                )
+
             # Updating the best values found
             self.p = best_p
             self.A = best_A
             self.B = best_B
 
             toc = time.time()
-
-            # TODO: Remover depois
-            # # Plotando o gráfico de custo vs p
-            # plt.figure(figsize=(6, 5), dpi=180)
-            # plt.plot(list(p_range)[: len(costs)], costs)
-            # plt.xlabel("p")
-            # plt.ylabel("Custo (Erro Quadrático)")
-            # plt.grid()
-            # plt.tight_layout()
 
             print(f"State-Space identification finished in: {toc - tic:.2f} s")
             print(

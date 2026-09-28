@@ -5534,6 +5534,24 @@ class Rotor(object):
         time_to_converge : float or None, optional
             Time, in seconds, before which simulated samples are discarded.
             Use ``None`` to retain the complete response.  Default is 1.0.
+        disturbance_changing_time : float, optional
+            Duration, in seconds, of each transition in the generated
+            disturbance. Default is 0.5.
+        disturbance_steady_time : float, optional
+            Nominal duration, in seconds, of each steady portion of the
+            generated disturbance. Default is 5.
+        disturbance_n_steps : int, optional
+            Number of randomly stepped values used to generate the
+            disturbance. Default is 60.
+        disturbance_step_amplitude : float, optional
+            Amplitude scale of the generated disturbance steps. Default is
+            ``10e-6``.
+        p : int or array_like of int, optional
+            State-space prediction window length or candidate window lengths.
+            The window determines how many subsequent input samples are
+            considered by the model when making a prediction. Larger values
+            consider more inputs. Used only for ``method="ss"``. Default is
+            20.
 
         Returns
         -------

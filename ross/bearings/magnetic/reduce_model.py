@@ -5,8 +5,6 @@ from scipy.linalg import eigh, block_diag
 
 from ross import MagneticBearingElement
 
-# TODO: Ajustar a forma como essa classe é invocada no método _run_amb_tf_reduction_identification
-
 
 class ReduceModel:
     """Build a reduced state-space model for a rotor with magnetic bearings.

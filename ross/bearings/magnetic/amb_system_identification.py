@@ -107,6 +107,24 @@ class AmbSystemIdentification:
         time_to_converge : float or None, optional
             Time, in seconds, before which simulated samples are discarded.
             Use ``None`` to retain the complete response.  Default is 1.0.
+        disturbance_changing_time : float, optional
+            Duration, in seconds, of each transition in the generated
+            disturbance. Default is 0.5.
+        disturbance_steady_time : float, optional
+            Nominal duration, in seconds, of each steady portion of the
+            generated disturbance. Default is 5.
+        disturbance_n_steps : int, optional
+            Number of randomly stepped values used to generate the
+            disturbance. Default is 60.
+        disturbance_step_amplitude : float, optional
+            Amplitude scale of the generated disturbance steps. Default is
+            ``10e-6``.
+        p : int or array_like of int, optional
+            State-space prediction window length or candidate window lengths.
+            The window determines how many subsequent input samples are
+            considered by the model when making a prediction. Larger values
+            consider more inputs. Used only for ``method="ss"``. Default is
+            20.
 
         Returns
         -------
@@ -156,10 +174,16 @@ class AmbSystemIdentification:
         ref_data = {}
         disturbances = {}
         channel_names = None
+
         num_modes = kwargs.get("num_modes", 10)
         dt = kwargs.get("dt", 1e-1)
         speed = kwargs.get("speed", 0)
         time_to_converge = kwargs.get("time_to_converge", 1.0)
+        disturbance_changing_time = kwargs.get("disturbance_changing_time", 0.5)
+        disturbance_steady_time = kwargs.get("disturbance_steady_time", 5)
+        disturbance_n_steps = kwargs.get("disturbance_n_steps", 60)
+        disturbance_step_amplitude = kwargs.get("disturbance_step_amplitude", 10e-6)
+        p = kwargs.get("p", 20)
 
         if method in ["de", "slsqp", "ss"]:
             self._run_amb_tf_data_driven_identification(
@@ -171,6 +195,11 @@ class AmbSystemIdentification:
                 models,
                 ref_data,
                 disturbances,
+                disturbance_changing_time,
+                disturbance_steady_time,
+                disturbance_n_steps,
+                disturbance_step_amplitude,
+                p,
             )
 
         elif method == "reduce":
@@ -289,6 +318,11 @@ class AmbSystemIdentification:
         models,
         ref_data,
         disturbances,
+        disturbance_changing_time,
+        disturbance_steady_time,
+        disturbance_n_steps,
+        disturbance_step_amplitude,
+        p=20,
     ):
         """Identify magnetic-bearing models from simulated time-response data.
 
@@ -329,6 +363,24 @@ class AmbSystemIdentification:
         disturbances : dict
             Dictionary to populate with the disturbance array for each
             identification experiment.  It is updated in place.
+        disturbance_changing_time : float, optional
+            Duration, in seconds, of each transition in the generated
+            disturbance. Default is 0.5.
+        disturbance_steady_time : float, optional
+            Nominal duration, in seconds, of each steady portion of the
+            generated disturbance. Default is 5.
+        disturbance_n_steps : int, optional
+            Number of randomly stepped values used to generate the
+            disturbance. Default is 60.
+        disturbance_step_amplitude : float, optional
+            Amplitude scale of the generated disturbance steps. Default is
+            ``10e-6``.
+        p : int or array_like of int, optional
+            State-space prediction window length or candidate window lengths.
+            The window determines how many subsequent input samples are
+            considered by the model when making a prediction. Larger values
+            consider more inputs. Used only when ``method="ss"``. Default is
+            20.
 
         Returns
         -------
@@ -346,7 +398,11 @@ class AmbSystemIdentification:
         >>> identification = AmbSystemIdentification(rotor)
         >>> models, ref_data, disturbances = {}, {}, {}
         >>> identification._run_amb_tf_data_driven_identification(
-        ...     "ss", 1e-3, 600.0, 1.0, 10, models, ref_data, disturbances
+        ...     "ss", 1e-3, 600.0, 1.0, 10, models, ref_data, disturbances,
+        ...     disturbance_changing_time=0.5,
+        ...     disturbance_steady_time=5,
+        ...     disturbance_n_steps=60,
+        ...     disturbance_step_amplitude=10e-6,
         ... )
         >>> len(models) == len(ref_data) == len(disturbances)
         True
@@ -357,10 +413,10 @@ class AmbSystemIdentification:
         for i in range(2 * n_ambs):
             t, d = get_disturbance(
                 dt,
-                changing_time=0.5,  # TODO: Deixar tudo isso a cargo do usuário
-                steady_time=5,  # TODO: Deixar tudo isso a cargo do usuário
-                n_steps=60,  # TODO: Deixar tudo isso a cargo do usuário
-                step_amplitude=10e-6,  # TODO: Deixar tudo isso a cargo do usuário
+                changing_time=disturbance_changing_time,
+                steady_time=disturbance_steady_time,
+                n_steps=disturbance_n_steps,
+                step_amplitude=disturbance_step_amplitude,
             )
 
             d_v = np.zeros((len(t), 2 * n_ambs))
@@ -389,7 +445,7 @@ class AmbSystemIdentification:
             amb_system_identification = SystemIdentification(
                 i_ref=current, y_ref=disp, t_ref=t
             )
-            model = amb_system_identification.identify(method=method)
+            model = amb_system_identification.identify(method=method, p=p)
 
             mma = ambs[i // 2]
             if i % 2 == 0:
