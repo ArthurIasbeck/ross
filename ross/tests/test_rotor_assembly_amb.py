@@ -474,13 +474,13 @@ def test_run_amb_tf_identification():
         assert isinstance(result, AmbTfIdentificationResult)
         assert result.method == method
         assert set(result.models) == expected_keys
-        assert set(result.perturbances) == expected_keys
+        assert set(result.disturbances) == expected_keys
         assert set(result.ref_data) == expected_keys
 
         for key in expected_keys:
             model = result.models[key]
             data = result.ref_data[key]
-            disturbance = result.perturbances[key]
+            disturbance = result.disturbances[key]
 
             if method in ["de", "slsqp"]:
                 assert isinstance(model, ct.TransferFunction)
@@ -509,8 +509,6 @@ def test_run_amb_tf_identification():
             assert len(disturbance) == len(data["time"])
             assert np.all(np.isfinite(disturbance))
 
-    # TODO: Replace this exception check with return-value assertions after
-    # ReduceModel handles the nearly unstable pole in this example rotor.
     with pytest.raises(RuntimeError, match="Could not reduce"):
         rotor.run_amb_tf_identification("reduce", num_modes=10)
 
@@ -581,7 +579,7 @@ def test_system_identification_ss_rejects_invalid_p_values(p):
 )
 def test_amb_tf_identification_reduce_plot_methods_warn(plot_method):
     result = AmbTfIdentificationResult(
-        models={}, perturbances={}, ref_data={}, method="reduce"
+        models={}, disturbances={}, ref_data={}, method="reduce"
     )
 
     with pytest.warns(UserWarning, match=r"plot_reduced_response\(\)"):

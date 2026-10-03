@@ -219,7 +219,7 @@ class AmbSystemIdentification:
 
         return AmbTfIdentificationResult(
             models=models,
-            perturbances=disturbances,
+            disturbances=disturbances,
             ref_data=ref_data,
             method=method,
             channel_names=channel_names,

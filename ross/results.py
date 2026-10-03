@@ -8104,17 +8104,95 @@ class ClearanceResults(Results):
 
 
 class AmbTfIdentificationResult(Results):
-    # TODO: Melhorar as docstrings dos métodos de plot
-    # TODO: Guardar o fitness no resultado
+    """Store and plot active magnetic bearing transfer-function results.
 
-    def __init__(self, models, perturbances, ref_data, method, channel_names=None):
+    This class stores the models identified from current and displacement
+    reference data, together with the disturbances used during the
+    identification. It supports plotting results from transfer-function and
+    state-space identification methods, as well as comparing an original
+    model with a reduced model.
+
+    Parameters
+    ----------
+    models : dict
+        Identified models. For ``"de"`` and ``"slsqp"``, values are
+        :class:`control.TransferFunction` objects. For ``"ss"``, values are
+        :class:`control.StateSpace` objects. For ``"reduce"``, the dictionary
+        must contain ``"original_model"`` and ``"reduced_model"``.
+    disturbances : dict
+        Disturbance signals indexed by the same keys used in ``ref_data``.
+        The signals are interpreted in metres.
+    ref_data : dict
+        Reference data indexed by model or experiment key. Each entry must
+        contain ``"time"``, ``"current"``, and ``"displacement"`` arrays.
+        Time is expressed in seconds, current in amperes, and displacement in
+        metres.
+    method : str
+        Identification method used to generate the models. Supported values
+        are ``"de"``, ``"slsqp"``, ``"ss"``, and ``"reduce"``.
+    channel_names : list of str, optional
+        Names for model input channels. When provided with a square MIMO
+        model, these names are used to label current and displacement
+        channels in the reduced frequency-response plot.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import control as ct
+    >>> t = np.linspace(0.0, 1.0, 11)
+    >>> data = {"test": {"time": t, "current": np.zeros(t.size),
+    ...                   "displacement": np.zeros(t.size)}}
+    >>> result = AmbTfIdentificationResult(
+    ...     models={"test": ct.tf([1.0], [1.0, 1.0])},
+    ...     disturbances={"test": np.zeros(t.size)},
+    ...     ref_data=data,
+    ...     method="de",
+    ... )
+    >>> result.method
+    'de'
+    """
+
+    def __init__(self, models, disturbances, ref_data, method, channel_names=None):
+        """Initialize an active magnetic bearing identification result.
+
+        Parameters
+        ----------
+        models : dict
+            Identified models, indexed by experiment key, or a dictionary
+            containing ``"original_model"`` and ``"reduced_model"`` when
+            ``method`` is ``"reduce"``.
+        disturbances : dict
+            Disturbance signals indexed by experiment key.
+        ref_data : dict
+            Reference data indexed by experiment key. Each entry contains
+            ``"time"``, ``"current"``, and ``"displacement"`` arrays.
+        method : str
+            Identification method. Supported values are ``"de"``, ``"slsqp"``,
+            ``"ss"``, and ``"reduce"``.
+        channel_names : list of str, optional
+            Optional names for the input channels of a reduced MIMO model.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import control as ct
+        >>> t = np.arange(5, dtype=float) * 0.1
+        >>> result = AmbTfIdentificationResult(
+        ...     {"test": ct.tf([1.0], [1.0, 1.0])},
+        ...     {"test": np.zeros(5)},
+        ...     {"test": {"time": t, "current": np.zeros(5),
+        ...               "displacement": np.zeros(5)}},
+        ...     "de",
+        ... )
+        >>> result.channel_names is None
+        True
+        """
         self.models = models
-        self.perturbances = perturbances
+        self.disturbances = disturbances
         self.ref_data = ref_data
         self.method = method
         self.channel_names = channel_names
 
-    # TODO: Reduzir a complexidade cognitiva dessa função
     def plot_reduced_frequency_response(
         self,
         frequency_units="rad/s",
@@ -8125,6 +8203,10 @@ class AmbTfIdentificationResult(Results):
         fig_kwargs=None,
     ):
         """Plot the original and reduced frequency responses.
+
+        This method is intended for results created with ``method="reduce"``.
+        It compares the magnitude, in decibels, of the original and reduced
+        MIMO models over a logarithmically spaced angular-frequency range.
 
         Parameters
         ----------
@@ -8147,6 +8229,35 @@ class AmbTfIdentificationResult(Results):
         -------
         fig : plotly.graph_objects.Figure
             Plotly figure containing the frequency responses.
+
+        Notes
+        -----
+        If the result was not generated with ``method="reduce"``, the method
+        returns ``None`` and emits a warning.
+
+        Examples
+        --------
+        >>> import ross as rs
+        >>> import control as ct
+        >>> rotor = rs.rotor_example()
+        >>> scipy_model = rotor._lti(speed=0)
+        >>> state_model = ct.ss(
+        ...     scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D
+        ... )
+        >>> model = ct.ss(
+        ...     state_model.A,
+        ...     state_model.B[:, :1],
+        ...     state_model.C[:1, :],
+        ...     state_model.D[:1, :1],
+        ... )
+        >>> result = rs.AmbTfIdentificationResult(
+        ...     {"original_model": model, "reduced_model": model}, {}, {}, "reduce"
+        ... )
+        >>> fig = result.plot_reduced_frequency_response(
+        ...     omega_max=100.0, num_freqs=20
+        ... )
+        >>> len(fig.data)
+        2
         """
         if self.method != "reduce":
             warn(
@@ -8155,13 +8266,128 @@ class AmbTfIdentificationResult(Results):
             )
             return None
 
+        response_data = self._compute_reduced_frequency_response(
+            frequency_units, omega_min, omega_max, num_freqs
+        )
+        num_rows, num_columns = response_data["reduced_mag"].shape[:2]
+        subplot_titles = self._get_frequency_response_labels(
+            num_rows, num_columns
+        )
+        fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
+        fig = self._create_frequency_response_figure(
+            num_rows, num_columns, subplot_titles, fig
+        )
+        self._add_frequency_response_traces(fig, response_data, frequency_units)
+        fig.update_layout(title="Frequency Response", **fig_kwargs)
+
+        return fig
+
+    def _compute_reduced_frequency_response(
+        self, frequency_units, omega_min, omega_max, num_freqs
+    ):
+        """Compute the original and reduced model frequency responses.
+
+        The responses are evaluated over a logarithmically spaced angular
+        frequency range. Magnitude data returned by ``python-control`` is
+        normalized to the ``[output, input, frequency]`` shape used by the
+        plotting methods, including for SISO models.
+
+        Parameters
+        ----------
+        frequency_units : str
+            Units used to convert the frequency axis.
+        omega_min : float
+            Minimum angular frequency in rad/s.
+        omega_max : float
+            Maximum angular frequency in rad/s.
+        num_freqs : int
+            Number of frequency points.
+
+        Returns
+        -------
+        response_data : dict
+            Dictionary containing the frequency-response data:
+
+            - ``"frequency"`` : ndarray
+                Frequency values converted to ``frequency_units``.
+            - ``"original_mag"`` : ndarray
+                Original model magnitudes with shape
+                ``[output, input, frequency]``.
+            - ``"reduced_mag"`` : ndarray
+                Reduced model magnitudes with shape
+                ``[output, input, frequency]``.
+
+        Examples
+        --------
+        >>> import control as ct
+        >>> import ross as rs
+        >>> rotor = rs.rotor_example()
+        >>> scipy_model = rotor._lti(speed=0)
+        >>> model = ct.ss(scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D)
+        >>> result = rs.AmbTfIdentificationResult(
+        ...     models={"original_model": model, "reduced_model": model},
+        ...     disturbances={}, ref_data={}, method="reduce",
+        ... )
+        >>> response_data = result._compute_reduced_frequency_response(
+        ...     "rad/s", 0.1, 10.0, 5
+        ... )
+        >>> sorted(response_data)
+        ['frequency', 'original_mag', 'reduced_mag']
+        >>> response_data["reduced_mag"].shape[-1]
+        5
+        """
         omega = np.logspace(np.log10(omega_min), np.log10(omega_max), num_freqs)
         frequency = Q_(omega, "rad/s").to(frequency_units).m
 
-        original_mag, _, _ = ct.frequency_response(self.models["original_model"], omega)
-        reduce_mag, _, _ = ct.frequency_response(self.models["reduced_model"], omega)
+        original_mag, _, _ = ct.frequency_response(
+            self.models["original_model"], omega
+        )
+        reduced_mag, _, _ = ct.frequency_response(
+            self.models["reduced_model"], omega
+        )
 
-        num_rows, num_columns = reduce_mag.shape[:2]
+        # python-control squeezes SISO responses to [frequency]. Keep the
+        # common [output, input, frequency] representation used by the plot.
+        if original_mag.ndim == 1:
+            original_mag = original_mag[None, None, :]
+        if reduced_mag.ndim == 1:
+            reduced_mag = reduced_mag[None, None, :]
+
+        return {
+            "frequency": frequency,
+            "original_mag": original_mag,
+            "reduced_mag": reduced_mag,
+        }
+
+    def _get_frequency_response_labels(self, num_rows, num_columns):
+        """Build subplot titles for the reduced frequency response.
+
+        Channel names supplied to the result are used when they describe a
+        square MIMO model. Otherwise, generic current and displacement names
+        are generated from the number of inputs and outputs.
+
+        Parameters
+        ----------
+        num_rows : int
+            Number of subplot rows, corresponding to model inputs.
+        num_columns : int
+            Number of subplot columns, corresponding to model outputs.
+
+        Returns
+        -------
+        subplot_titles : list of str
+            Titles for the subplots in row-major order.
+
+        Examples
+        --------
+        >>> import ross as rs
+        >>> result = rs.AmbTfIdentificationResult(
+        ...     models={}, disturbances={}, ref_data={}, method="reduce",
+        ...     channel_names=["Current X", "Current Y"],
+        ... )
+        >>> result._get_frequency_response_labels(2, 2)
+        ['Current X →<br>Displacement X', 'Current X →<br>Displacement Y', 'Current Y →<br>Displacement X', 'Current Y →<br>Displacement Y']
+        """
         if (
             self.channel_names is not None
             and len(self.channel_names) == num_rows
@@ -8176,22 +8402,105 @@ class AmbTfIdentificationResult(Results):
             input_names = [f"Current {index + 1}" for index in range(num_columns)]
             output_names = [f"Displacement {index + 1}" for index in range(num_rows)]
 
-        subplot_titles = [
+        return [
             f"{input_names[row]} →<br>{output_names[column]}"
             for row in range(num_rows)
             for column in range(num_columns)
         ]
-        fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
-        fig = (
-            make_subplots(
-                rows=num_rows,
-                cols=num_columns,
-                shared_xaxes=True,
-                subplot_titles=subplot_titles,
-            )
-            if fig is None
-            else fig
+
+    @staticmethod
+    def _create_frequency_response_figure(
+        num_rows, num_columns, subplot_titles, fig=None
+    ):
+        """Create the subplot figure unless one was supplied by the caller.
+
+        Parameters
+        ----------
+        num_rows : int
+            Number of rows in the subplot grid.
+        num_columns : int
+            Number of columns in the subplot grid.
+        subplot_titles : list of str
+            Titles assigned to the subplots in row-major order.
+        fig : plotly.graph_objects.Figure, optional
+            Existing figure to reuse. If provided, it is returned unchanged.
+
+        Returns
+        -------
+        fig : plotly.graph_objects.Figure
+            The supplied figure or a newly created subplot figure.
+
+        Examples
+        --------
+        >>> import ross as rs
+        >>> result = rs.AmbTfIdentificationResult(
+        ...     models={}, disturbances={}, ref_data={}, method="reduce",
+        ... )
+        >>> titles = ["Input 1 →<br>Output 1", "Input 1 →<br>Output 2"]
+        >>> fig = result._create_frequency_response_figure(1, 2, titles)
+        >>> len(fig.data)
+        0
+        >>> len(fig.layout.annotations)
+        2
+        """
+        if fig is not None:
+            return fig
+
+        return make_subplots(
+            rows=num_rows,
+            cols=num_columns,
+            shared_xaxes=True,
+            subplot_titles=subplot_titles,
         )
+
+    @staticmethod
+    def _add_frequency_response_traces(fig, response_data, frequency_units):
+        """Add original and reduced response traces to a subplot figure.
+
+        Magnitudes are converted to decibels before being plotted. Two traces
+        are added for each input-output pair: one for the reduced model and
+        one for the original model. The first pair displays the legend entries
+        for both trace groups. The figure is modified in place.
+
+        Parameters
+        ----------
+        fig : plotly.graph_objects.Figure
+            Figure to which the traces and axis configurations are added.
+        response_data : dict
+            Frequency-response data returned by
+            ``_compute_reduced_frequency_response``.
+        frequency_units : str
+            Units displayed on the frequency axis.
+
+        Returns
+        -------
+        None
+            The figure is modified in place.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import ross as rs
+        >>> result = rs.AmbTfIdentificationResult(
+        ...     models={}, disturbances={}, ref_data={}, method="reduce",
+        ... )
+        >>> frequency = np.logspace(-1, 1, 5)
+        >>> response_data = {
+        ...     "frequency": frequency,
+        ...     "original_mag": np.ones((2, 2, 5)),
+        ...     "reduced_mag": np.ones((2, 2, 5)),
+        ... }
+        >>> fig = result._create_frequency_response_figure(
+        ...     2, 2, ["Input 1", "Input 2", "Input 3", "Input 4"]
+        ... )
+        >>> result._add_frequency_response_traces(fig, response_data, "rad/s")
+        >>> len(fig.data)
+        8
+        """
+        frequency = response_data["frequency"]
+        original_mag = response_data["original_mag"]
+        reduced_mag = response_data["reduced_mag"]
+        num_rows, num_columns = reduced_mag.shape[:2]
 
         for row in range(num_rows):
             for column in range(num_columns):
@@ -8200,7 +8509,7 @@ class AmbTfIdentificationResult(Results):
                 # inputs and columns represent outputs, so the first two
                 # indices must be transposed here.
                 original_mag_ij = original_mag[column, row, :]
-                reduce_mag_ij = reduce_mag[column, row, :]
+                reduce_mag_ij = reduced_mag[column, row, :]
 
                 original_mag_db = 20 * np.log10(
                     np.maximum(original_mag_ij, np.finfo(float).tiny)
@@ -8261,10 +8570,6 @@ class AmbTfIdentificationResult(Results):
                     col=column + 1,
                 )
 
-        fig.update_layout(title="Frequency Response", **fig_kwargs)
-
-        return fig
-
     def plot_model_response(
         self,
         displacement_units="m",
@@ -8273,6 +8578,11 @@ class AmbTfIdentificationResult(Results):
         fig_kwargs=None,
     ):
         """Plot model and reference responses.
+
+        For transfer-function methods, the model response is calculated with
+        :func:`control.forced_response`. For state-space identification, the
+        response is calculated with the stored discrete state-space matrices
+        and the reference input data.
 
         Parameters
         ----------
@@ -8291,6 +8601,39 @@ class AmbTfIdentificationResult(Results):
         -------
         fig : plotly.graph_objects.Figure
             Plotly figure containing the model and reference responses.
+
+        Notes
+        -----
+        If ``method="reduce"``, the method returns ``None`` and emits a
+        warning because reduced models do not use time-domain simulation data.
+
+        Examples
+        --------
+        >>> import ross as rs
+        >>> import numpy as np
+        >>> import control as ct
+        >>> rotor = rs.rotor_example()
+        >>> scipy_model = rotor._lti(speed=0)
+        >>> state_model = ct.ss(
+        ...     scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D
+        ... )
+        >>> model = ct.ss(
+        ...     state_model.A,
+        ...     state_model.B[:, :1],
+        ...     state_model.C[:1, :],
+        ...     state_model.D[:1, :1],
+        ... )
+        >>> t = np.linspace(0.0, 1.0, 11)
+        >>> result = AmbTfIdentificationResult(
+        ...     {"test": model},
+        ...     {"test": np.zeros(t.size)},
+        ...     {"test": {"time": t, "current": np.zeros(t.size),
+        ...               "displacement": np.zeros(t.size)}},
+        ...     "de",
+        ... )
+        >>> fig = result.plot_model_response()
+        >>> len(fig.data)
+        2
         """
         if self.method == "reduce":
             warn(
@@ -8378,6 +8721,9 @@ class AmbTfIdentificationResult(Results):
     ):
         """Plot the disturbances used in the identification.
 
+        Disturbances are plotted using the time vector stored in the
+        corresponding reference-data entry.
+
         Parameters
         ----------
         disturbance_units : str, optional
@@ -8395,6 +8741,27 @@ class AmbTfIdentificationResult(Results):
         -------
         fig : plotly.graph_objects.Figure
             Plotly figure containing the disturbances.
+
+        Notes
+        -----
+        If ``method="reduce"``, the method returns ``None`` and emits a
+        warning because reduction results do not contain simulation
+        disturbances.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> t = np.linspace(0.0, 1.0, 11)
+        >>> result = AmbTfIdentificationResult(
+        ...     {},
+        ...     {"test": np.sin(t)},
+        ...     {"test": {"time": t, "current": np.zeros(t.size),
+        ...               "displacement": np.zeros(t.size)}},
+        ...     "de",
+        ... )
+        >>> fig = result.plot_disturbances()
+        >>> len(fig.data)
+        1
         """
         if self.method == "reduce":
             warn(
@@ -8408,7 +8775,7 @@ class AmbTfIdentificationResult(Results):
 
         fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
 
-        for key, disturbance in self.perturbances.items():
+        for key, disturbance in self.disturbances.items():
             # Use the time array provided in ref_data
             time = Q_(self.ref_data[key]["time"], "s").to(time_units).m
             disturbance_values = Q_(disturbance, "m").to(disturbance_units).m
@@ -8446,6 +8813,9 @@ class AmbTfIdentificationResult(Results):
     ):
         """Plot the reference data (current and displacement) for each set.
 
+        The current and displacement signals are shown in separate rows and
+        share the time axis.
+
         Parameters
         ----------
         current_units : str, optional
@@ -8465,6 +8835,27 @@ class AmbTfIdentificationResult(Results):
         -------
         fig : plotly.graph_objects.Figure
             Plotly figure containing the reference data.
+
+        Notes
+        -----
+        If ``method="reduce"``, the method returns ``None`` and emits a
+        warning because reduction results do not contain time-domain reference
+        data.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> t = np.linspace(0.0, 1.0, 11)
+        >>> result = AmbTfIdentificationResult(
+        ...     {},
+        ...     {"test": np.zeros(t.size)},
+        ...     {"test": {"time": t, "current": np.zeros(t.size),
+        ...               "displacement": np.zeros(t.size)}},
+        ...     "de",
+        ... )
+        >>> fig = result.plot_ref_data()
+        >>> len(fig.data)
+        2
         """
         if self.method == "reduce":
             warn(
