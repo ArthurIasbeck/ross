@@ -5509,10 +5509,12 @@ class Rotor(object):
         The returned result contains one model for each direction of every
         magnetic bearing.  Direction keys have the form
         ``"<bearing tag> (node <node>) - v"`` and
-        ``"<bearing tag> (node <node>) - w"``.  For data-driven methods, the
-        corresponding disturbance and reference data are also stored.  For
-        ``"reduce"``, those entries are empty because no time-domain
-        identification data are generated.
+        ``"<bearing tag> (node <node>) - w"``.  For data-driven methods,
+        corresponding fitness values, disturbance signals, and reference
+        data are also stored.  For ``"reduce"``, the disturbance and
+        reference-data entries are empty because no time-domain identification
+        data are generated, and ``fits`` is empty because no data-driven
+        fitness is calculated.
 
         Parameters
         ----------
@@ -5557,9 +5559,11 @@ class Rotor(object):
         -------
         results : ross.AmbTfIdentificationResult
             Result object containing ``models``, ``perturbances``,
-            ``ref_data``, and the selected ``method``.  The result also
-            provides plotting methods for model responses, disturbances, and
-            reference data.
+            ``ref_data``, ``fits``, and the selected ``method``.  For
+            data-driven methods, ``fits`` contains one fitness value in
+            percent for each identified model.  It is empty for
+            ``method="reduce"``.  The result also provides plotting methods
+            for model responses, disturbances, and reference data.
 
         Examples
         --------

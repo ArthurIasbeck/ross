@@ -82,10 +82,12 @@ class AmbSystemIdentification:
         The returned result contains one model for each direction of every
         magnetic bearing.  Direction keys have the form
         ``"<bearing tag> (node <node>) - v"`` and
-        ``"<bearing tag> (node <node>) - w"``.  For data-driven methods, the
-        corresponding disturbance and reference data are also stored.  For
-        ``"reduce"``, those entries are empty because no time-domain
-        identification data are generated.
+        ``"<bearing tag> (node <node>) - w"``.  For data-driven methods,
+        corresponding fitness values, disturbance signals, and reference
+        data are also stored.  For ``"reduce"``, the disturbance and
+        reference-data entries are empty because no time-domain identification
+        data are generated, and ``fits`` is empty because no data-driven
+        fitness is calculated.
 
         Parameters
         ----------
@@ -130,9 +132,11 @@ class AmbSystemIdentification:
         -------
         results : ross.AmbTfIdentificationResult
             Result object containing ``models``, ``perturbances``,
-            ``ref_data``, and the selected ``method``.  The result also
-            provides plotting methods for model responses, disturbances, and
-            reference data.
+            ``ref_data``, ``fits``, and the selected ``method``.  For
+            data-driven methods, ``fits`` contains one fitness value in
+            percent for each identified model.  It is empty for
+            ``method="reduce"``.  The result also provides plotting methods
+            for model responses, disturbances, and reference data.
 
         Examples
         --------
@@ -171,6 +175,7 @@ class AmbSystemIdentification:
             )
 
         models = {}
+        fits = {}
         ref_data = {}
         disturbances = {}
         channel_names = None
@@ -194,6 +199,7 @@ class AmbSystemIdentification:
                 num_modes,
                 models,
                 ref_data,
+                fits,
                 disturbances,
                 disturbance_changing_time,
                 disturbance_steady_time,
@@ -219,6 +225,7 @@ class AmbSystemIdentification:
 
         return AmbTfIdentificationResult(
             models=models,
+            fits=fits,
             disturbances=disturbances,
             ref_data=ref_data,
             method=method,
@@ -240,7 +247,9 @@ class AmbSystemIdentification:
         transfer functions are stored in ``models`` under ``- v`` and ``- w``
         keys.  Since this method performs model reduction rather than a
         time-domain experiment, it inserts empty disturbance arrays and empty
-        reference-data arrays for each model.
+        reference-data arrays for each model.  No fitness values are
+        calculated by this workflow; the public result therefore contains an
+        empty ``fits`` dictionary.
 
         This is an internal helper called by
         :meth:`run_amb_tf_identification` when ``method="reduce"``.  The
@@ -317,6 +326,7 @@ class AmbSystemIdentification:
         num_modes,
         models,
         ref_data,
+        fits,
         disturbances,
         disturbance_changing_time,
         disturbance_steady_time,
@@ -331,12 +341,13 @@ class AmbSystemIdentification:
         a time.  For every experiment it runs :meth:`run_time_response`,
         extracts the magnetic-bearing current and displacement signals, and
         optionally removes the initial transient.  An
-        :class:`SystemIdentification` instance then identifies the model
-        using ``method``.
+        :class:`SystemIdentification` instance then identifies the model and
+        calculates its fitness using ``method``.
 
         Two entries are created for each magnetic bearing: one for the ``v``
         direction and one for the ``w`` direction.  The input dictionaries are
-        modified in place.
+        modified in place.  The fitness values are percentages indexed by the
+        same direction keys as the identified models.
 
         Parameters
         ----------
@@ -356,6 +367,10 @@ class AmbSystemIdentification:
         models : dict
             Dictionary to populate with the identified models.  It is updated
             in place.
+        fits : dict
+            Dictionary to populate with the fitness, in percent, of each
+            identified model.  It is updated in place using the same keys as
+            ``models``.
         ref_data : dict
             Dictionary to populate with the ``current``, ``displacement``, and
             ``time`` arrays for each identification experiment.  It is updated
@@ -385,8 +400,9 @@ class AmbSystemIdentification:
         Returns
         -------
         None
-            The input dictionaries contain the generated models and metadata
-            after the method completes.
+            The input dictionaries contain the identified models, fitness
+            values, disturbances, and reference data after the method
+            completes.
 
         Examples
         --------
@@ -396,15 +412,15 @@ class AmbSystemIdentification:
         ... )
         >>> rotor = rotor_example_amb_simple()
         >>> identification = AmbSystemIdentification(rotor)
-        >>> models, ref_data, disturbances = {}, {}, {}
+        >>> models, ref_data, fits, disturbances = {}, {}, {}, {}
         >>> identification._run_amb_tf_data_driven_identification(
-        ...     "ss", 1e-3, 600.0, 1.0, 10, models, ref_data, disturbances,
+        ...     "ss", 1e-3, 600.0, 1.0, 10, models, ref_data, fits, disturbances,
         ...     disturbance_changing_time=0.5,
         ...     disturbance_steady_time=5,
         ...     disturbance_n_steps=60,
         ...     disturbance_step_amplitude=10e-6,
         ... )
-        >>> len(models) == len(ref_data) == len(disturbances)
+        >>> len(models) == len(fits) == len(ref_data) == len(disturbances)
         True
         """
         ambs = get_ambs(self.rotor)
@@ -445,11 +461,12 @@ class AmbSystemIdentification:
             amb_system_identification = SystemIdentification(
                 i_ref=current, y_ref=disp, t_ref=t
             )
-            model = amb_system_identification.identify(method=method, p=p)
+            model, fit = amb_system_identification.identify(method=method, p=p)
 
             mma = ambs[i // 2]
             if i % 2 == 0:
                 models[f"{mma.tag} (node {mma.n}) - v"] = model
+                fits[f"{mma.tag} (node {mma.n}) - v"] = fit
                 disturbances[f"{mma.tag} (node {mma.n}) - v"] = d
                 ref_data[f"{mma.tag} (node {mma.n}) - v"] = {
                     "current": current,
@@ -458,6 +475,7 @@ class AmbSystemIdentification:
                 }
             else:
                 models[f"{mma.tag} (node {mma.n}) - w"] = model
+                fits[f"{mma.tag} (node {mma.n}) - w"] = fit
                 disturbances[f"{mma.tag} (node {mma.n}) - w"] = d
                 ref_data[f"{mma.tag} (node {mma.n}) - w"] = {
                     "current": current,

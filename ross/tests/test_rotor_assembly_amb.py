@@ -16,6 +16,78 @@ from ross.probe import Probe
 from ross.units import Q_
 
 
+def test_system_identification_fitness_uses_vector_norm():
+    y_ref = np.array([1.0, 2.0, 4.0])
+    y_pred = np.array([1.0, 3.0, 2.0])
+    identification = SystemIdentification(np.zeros(3), y_ref, np.arange(3.0))
+
+    expected = 100 * (
+        1 - np.linalg.norm(y_ref - y_pred) / np.linalg.norm(y_ref - y_ref.mean())
+    )
+
+    assert_allclose(identification._fitness(y_pred), expected)
+
+
+def test_system_identification_fitness_perfect_prediction_is_100():
+    y_ref = np.array([1.0, 2.0, 4.0])
+    identification = SystemIdentification(np.zeros(3), y_ref, np.arange(3.0))
+
+    assert identification._fitness(y_ref) == 100.0
+
+
+def test_system_identification_fitness_constant_reference_is_zero():
+    identification = SystemIdentification(
+        np.zeros(3), np.ones(3), np.arange(3.0)
+    )
+
+    assert identification._fitness(np.zeros(3)) == 0.0
+
+
+def test_system_identification_identify_propagates_model_and_fitness(monkeypatch):
+    identification = SystemIdentification(
+        np.zeros(3), np.ones(3), np.arange(3.0)
+    )
+    expected = (object(), 42.0)
+    monkeypatch.setattr(identification, "_identify_ss", lambda p: expected)
+
+    assert identification.identify(method="ss", p=2) == expected
+
+
+@pytest.mark.parametrize("method", ["de", "slsqp"])
+def test_system_identification_transfer_methods_return_model_and_fitness(
+    monkeypatch, method
+):
+    from types import SimpleNamespace
+
+    import ross.bearings.magnetic.system_identification as system_identification
+
+    t_ref = np.arange(10, dtype=float) * 0.01
+    identification = SystemIdentification(
+        np.zeros(t_ref.size), np.zeros(t_ref.size), t_ref
+    )
+    x = np.array([0.001, 0.001, 0.001, 0.001])
+
+    if method == "de":
+        def fake_differential_evolution(func, bounds, callback, **kwargs):
+            return SimpleNamespace(x=x, fun=func(x))
+
+        monkeypatch.setattr(
+            system_identification,
+            "differential_evolution",
+            fake_differential_evolution,
+        )
+    else:
+        def fake_minimize(fun, x0, method, callback, options):
+            return SimpleNamespace(x=x, fun=fun(x))
+
+        monkeypatch.setattr(system_identification, "minimize", fake_minimize)
+
+    model, fitness = getattr(identification, f"_identify_{method}")()
+
+    assert isinstance(model, ct.TransferFunction)
+    assert isinstance(fitness, float)
+
+
 def test_run_time_response_amb_values():
     rotor = rotor_example_amb_simple()
     t = np.arange(0, 2, 1e-6)

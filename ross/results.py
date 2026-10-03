@@ -8107,7 +8107,7 @@ class AmbTfIdentificationResult(Results):
     """Store and plot active magnetic bearing transfer-function results.
 
     This class stores the models identified from current and displacement
-    reference data, together with the disturbances used during the
+    reference data, their fitness values, and the disturbances used during the
     identification. It supports plotting results from transfer-function and
     state-space identification methods, as well as comparing an original
     model with a reduced model.
@@ -8119,6 +8119,9 @@ class AmbTfIdentificationResult(Results):
         :class:`control.TransferFunction` objects. For ``"ss"``, values are
         :class:`control.StateSpace` objects. For ``"reduce"``, the dictionary
         must contain ``"original_model"`` and ``"reduced_model"``.
+    fits : dict
+        Fitness values in percent for the identified models, indexed by the
+        same keys as ``models``. It is empty for ``method="reduce"``.
     disturbances : dict
         Disturbance signals indexed by the same keys used in ``ref_data``.
         The signals are interpreted in metres.
@@ -8144,6 +8147,7 @@ class AmbTfIdentificationResult(Results):
     ...                   "displacement": np.zeros(t.size)}}
     >>> result = AmbTfIdentificationResult(
     ...     models={"test": ct.tf([1.0], [1.0, 1.0])},
+    ...     fits={"test": 95.0},
     ...     disturbances={"test": np.zeros(t.size)},
     ...     ref_data=data,
     ...     method="de",
@@ -8152,7 +8156,9 @@ class AmbTfIdentificationResult(Results):
     'de'
     """
 
-    def __init__(self, models, disturbances, ref_data, method, channel_names=None):
+    def __init__(
+        self, models, fits, disturbances, ref_data, method, channel_names=None
+    ):
         """Initialize an active magnetic bearing identification result.
 
         Parameters
@@ -8161,6 +8167,9 @@ class AmbTfIdentificationResult(Results):
             Identified models, indexed by experiment key, or a dictionary
             containing ``"original_model"`` and ``"reduced_model"`` when
             ``method`` is ``"reduce"``.
+        fits : dict
+            Fitness values in percent for the identified models, indexed by
+            the same keys as ``models``. It is empty for ``method="reduce"``.
         disturbances : dict
             Disturbance signals indexed by experiment key.
         ref_data : dict
@@ -8178,16 +8187,18 @@ class AmbTfIdentificationResult(Results):
         >>> import control as ct
         >>> t = np.arange(5, dtype=float) * 0.1
         >>> result = AmbTfIdentificationResult(
-        ...     {"test": ct.tf([1.0], [1.0, 1.0])},
-        ...     {"test": np.zeros(5)},
-        ...     {"test": {"time": t, "current": np.zeros(5),
-        ...               "displacement": np.zeros(5)}},
-        ...     "de",
+        ...     models={"test": ct.tf([1.0], [1.0, 1.0])},
+        ...     fits={"test": 95.0},
+        ...     disturbances={"test": np.zeros(5)},
+        ...     ref_data={"test": {"time": t, "current": np.zeros(5),
+        ...                       "displacement": np.zeros(5)}},
+        ...     method="de",
         ... )
         >>> result.channel_names is None
         True
         """
         self.models = models
+        self.fits = fits
         self.disturbances = disturbances
         self.ref_data = ref_data
         self.method = method
@@ -8251,7 +8262,7 @@ class AmbTfIdentificationResult(Results):
         ...     state_model.D[:1, :1],
         ... )
         >>> result = rs.AmbTfIdentificationResult(
-        ...     {"original_model": model, "reduced_model": model}, {}, {}, "reduce"
+        ...     {"original_model": model, "reduced_model": model}, {}, {}, {}, "reduce"
         ... )
         >>> fig = result.plot_reduced_frequency_response(
         ...     omega_max=100.0, num_freqs=20
@@ -8270,9 +8281,7 @@ class AmbTfIdentificationResult(Results):
             frequency_units, omega_min, omega_max, num_freqs
         )
         num_rows, num_columns = response_data["reduced_mag"].shape[:2]
-        subplot_titles = self._get_frequency_response_labels(
-            num_rows, num_columns
-        )
+        subplot_titles = self._get_frequency_response_labels(num_rows, num_columns)
         fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
         fig = self._create_frequency_response_figure(
             num_rows, num_columns, subplot_titles, fig
@@ -8326,6 +8335,7 @@ class AmbTfIdentificationResult(Results):
         >>> model = ct.ss(scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D)
         >>> result = rs.AmbTfIdentificationResult(
         ...     models={"original_model": model, "reduced_model": model},
+        ...     fits={},
         ...     disturbances={}, ref_data={}, method="reduce",
         ... )
         >>> response_data = result._compute_reduced_frequency_response(
@@ -8339,12 +8349,8 @@ class AmbTfIdentificationResult(Results):
         omega = np.logspace(np.log10(omega_min), np.log10(omega_max), num_freqs)
         frequency = Q_(omega, "rad/s").to(frequency_units).m
 
-        original_mag, _, _ = ct.frequency_response(
-            self.models["original_model"], omega
-        )
-        reduced_mag, _, _ = ct.frequency_response(
-            self.models["reduced_model"], omega
-        )
+        original_mag, _, _ = ct.frequency_response(self.models["original_model"], omega)
+        reduced_mag, _, _ = ct.frequency_response(self.models["reduced_model"], omega)
 
         # python-control squeezes SISO responses to [frequency]. Keep the
         # common [output, input, frequency] representation used by the plot.
@@ -8382,7 +8388,7 @@ class AmbTfIdentificationResult(Results):
         --------
         >>> import ross as rs
         >>> result = rs.AmbTfIdentificationResult(
-        ...     models={}, disturbances={}, ref_data={}, method="reduce",
+        ...     models={}, fits={}, disturbances={}, ref_data={}, method="reduce",
         ...     channel_names=["Current X", "Current Y"],
         ... )
         >>> result._get_frequency_response_labels(2, 2)
@@ -8395,8 +8401,7 @@ class AmbTfIdentificationResult(Results):
         ):
             input_names = self.channel_names
             output_names = [
-                name.replace("Current ", "Displacement ")
-                for name in self.channel_names
+                name.replace("Current ", "Displacement ") for name in self.channel_names
             ]
         else:
             input_names = [f"Current {index + 1}" for index in range(num_columns)]
@@ -8434,7 +8439,7 @@ class AmbTfIdentificationResult(Results):
         --------
         >>> import ross as rs
         >>> result = rs.AmbTfIdentificationResult(
-        ...     models={}, disturbances={}, ref_data={}, method="reduce",
+        ...     models={}, fits={}, disturbances={}, ref_data={}, method="reduce",
         ... )
         >>> titles = ["Input 1 →<br>Output 1", "Input 1 →<br>Output 2"]
         >>> fig = result._create_frequency_response_figure(1, 2, titles)
@@ -8482,7 +8487,7 @@ class AmbTfIdentificationResult(Results):
         >>> import numpy as np
         >>> import ross as rs
         >>> result = rs.AmbTfIdentificationResult(
-        ...     models={}, disturbances={}, ref_data={}, method="reduce",
+        ...     models={}, fits={}, disturbances={}, ref_data={}, method="reduce",
         ... )
         >>> frequency = np.logspace(-1, 1, 5)
         >>> response_data = {
@@ -8625,11 +8630,12 @@ class AmbTfIdentificationResult(Results):
         ... )
         >>> t = np.linspace(0.0, 1.0, 11)
         >>> result = AmbTfIdentificationResult(
-        ...     {"test": model},
-        ...     {"test": np.zeros(t.size)},
-        ...     {"test": {"time": t, "current": np.zeros(t.size),
-        ...               "displacement": np.zeros(t.size)}},
-        ...     "de",
+        ...     models={"test": model},
+        ...     fits={"test": 95.0},
+        ...     disturbances={"test": np.zeros(t.size)},
+        ...     ref_data={"test": {"time": t, "current": np.zeros(t.size),
+        ...                       "displacement": np.zeros(t.size)}},
+        ...     method="de",
         ... )
         >>> fig = result.plot_model_response()
         >>> len(fig.data)
@@ -8753,11 +8759,12 @@ class AmbTfIdentificationResult(Results):
         >>> import numpy as np
         >>> t = np.linspace(0.0, 1.0, 11)
         >>> result = AmbTfIdentificationResult(
-        ...     {},
-        ...     {"test": np.sin(t)},
-        ...     {"test": {"time": t, "current": np.zeros(t.size),
-        ...               "displacement": np.zeros(t.size)}},
-        ...     "de",
+        ...     models={},
+        ...     fits={"test": 95.0},
+        ...     disturbances={"test": np.sin(t)},
+        ...     ref_data={"test": {"time": t, "current": np.zeros(t.size),
+        ...                       "displacement": np.zeros(t.size)}},
+        ...     method="de",
         ... )
         >>> fig = result.plot_disturbances()
         >>> len(fig.data)
@@ -8847,11 +8854,12 @@ class AmbTfIdentificationResult(Results):
         >>> import numpy as np
         >>> t = np.linspace(0.0, 1.0, 11)
         >>> result = AmbTfIdentificationResult(
-        ...     {},
-        ...     {"test": np.zeros(t.size)},
-        ...     {"test": {"time": t, "current": np.zeros(t.size),
-        ...               "displacement": np.zeros(t.size)}},
-        ...     "de",
+        ...     models={},
+        ...     fits={"test": 95.0},
+        ...     disturbances={"test": np.zeros(t.size)},
+        ...     ref_data={"test": {"time": t, "current": np.zeros(t.size),
+        ...                       "displacement": np.zeros(t.size)}},
+        ...     method="de",
         ... )
         >>> fig = result.plot_ref_data()
         >>> len(fig.data)

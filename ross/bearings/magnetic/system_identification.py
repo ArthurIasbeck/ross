@@ -238,7 +238,6 @@ class SystemIdentification:
         self.t_ref = t_ref  # Reference time vector
 
         self.function_call = 0  # Counter for cost function calls
-        self._last_method = None  # Stores the last executed identification method
 
         self.result = None  # Result object from the optimization
         self.last_cost = 0.0  # Value of the last cost calculation
@@ -257,6 +256,49 @@ class SystemIdentification:
         self.v_ref = None  # Reference output derivative
         self.A = None  # Identified State-Space A matrix
         self.B = None  # Identified State-Space B matrix
+
+    def _fitness(self, y_pred):
+        """Calculate the model fitness against the reference output.
+
+        Fitness is expressed as a percentage based on the norm of the
+        prediction error relative to the norm of the reference output after
+        removing its mean.  A perfect prediction has a fitness of 100.0.  If
+        the reference output is constant, the fitness is defined as 0.0.
+
+        Parameters
+        ----------
+        y_pred : array_like
+            Model-predicted output corresponding to ``self.y_ref``.
+
+        Returns
+        -------
+        fitness : float
+            Fitness value in percent.
+
+        Examples
+        --------
+        >>> t = np.arange(3, dtype=float)
+        >>> identification = SystemIdentification(
+        ...     np.zeros(3), np.array([1.0, 2.0, 4.0]), t
+        ... )
+        >>> identification._fitness(np.array([1.0, 2.0, 4.0]))
+        100.0
+
+        A constant reference signal has no variation for comparison, so its
+        fitness is defined as zero:
+
+        >>> identification = SystemIdentification(
+        ...     np.zeros(3), np.ones(3), t
+        ... )
+        >>> identification._fitness(np.zeros(3))
+        0.0
+        """
+        y_ref = np.asarray(self.y_ref)
+        y_pred = np.asarray(y_pred)
+        reference_norm = np.linalg.norm(y_ref - np.mean(y_ref))
+        if reference_norm == 0:
+            return 0.0
+        return float(100 * (1 - np.linalg.norm(y_ref - y_pred) / reference_norm))
 
     def _cost(self, X):
         """
@@ -447,8 +489,8 @@ class SystemIdentification:
 
         Returns
         -------
-        control.TransferFunction
-            Identified second-order transfer function with one zero.
+        tuple
+            Identified transfer function and its fitness in percent.
 
         Examples
         --------
@@ -467,9 +509,9 @@ class SystemIdentification:
         ...     "ross.bearings.magnetic.system_identification.differential_evolution",
         ...     fake_differential_evolution,
         ... ), redirect_stdout(StringIO()):
-        ...     model = identification._identify_de()
-        >>> isinstance(model, ct.TransferFunction)
-        True
+        ...     model, fitness = identification._identify_de()
+        >>> isinstance(model, ct.TransferFunction), isinstance(fitness, float)
+        (True, True)
         """
         print("Starting identification using Differential Evolution (DE)...")
         bounds = [(-0.1, 0.1), (-0.1, 0.1), (-0.1, 0.1), (-0.1, 0.1)]
@@ -498,10 +540,14 @@ class SystemIdentification:
         toc = time.time()
 
         print(f"Optimization finished in: {toc - tic:.2f} s")
-        print(f"Best x: {self.result.x} | Best fit: {1 - self.result.fun}")
+        print(f"Best x: {self.result.x} | Best cost: {self.result.fun}")
         Kp, Tp1, Tp2, Tz = self.result.x
         s = ct.tf("s")
-        return Kp * (1 + s * Tz) / ((1 + s * Tp1) * (1 + s * Tp2))
+        model = Kp * (1 + s * Tz) / ((1 + s * Tp1) * (1 + s * Tp2))
+        response = ct.forced_response(model, T=self.t_ref, U=self.i_ref)
+        fitness = self._fitness(response.outputs)
+        print(f"Best x: {self.result.x} | Fitness: {fitness:.4f}")
+        return model, fitness
 
     def _identify_slsqp(self):
         """
@@ -512,8 +558,8 @@ class SystemIdentification:
 
         Returns
         -------
-        control.TransferFunction
-            Identified second-order transfer function with one zero.
+        tuple
+            Identified transfer function and its fitness in percent.
 
         Examples
         --------
@@ -532,9 +578,9 @@ class SystemIdentification:
         ...     "ross.bearings.magnetic.system_identification.minimize",
         ...     fake_minimize,
         ... ), redirect_stdout(StringIO()):
-        ...     model = identification._identify_slsqp()
-        >>> isinstance(model, ct.TransferFunction)
-        True
+        ...     model, fitness = identification._identify_slsqp()
+        >>> isinstance(model, ct.TransferFunction), isinstance(fitness, float)
+        (True, True)
         """
         print("Starting identification using SLSQP...")
         x0 = np.array([0.001, 0.001, 0.001, 0.001])
@@ -551,10 +597,14 @@ class SystemIdentification:
         toc = time.time()
 
         print(f"Optimization finished in: {toc - tic:.2f} s")
-        print(f"Best x: {self.result.x} | Best fit: {1 - self.result.fun}")
+        print(f"Best x: {self.result.x} | Best cost: {self.result.fun}")
         Kp, Tp1, Tp2, Tz = self.result.x
         s = ct.tf("s")
-        return Kp * (1 + s * Tz) / ((1 + s * Tp1) * (1 + s * Tp2))
+        model = Kp * (1 + s * Tz) / ((1 + s * Tp1) * (1 + s * Tp2))
+        response = ct.forced_response(model, T=self.t_ref, U=self.i_ref)
+        fitness = self._fitness(response.outputs)
+        print(f"Best x: {self.result.x} | Fitness: {fitness:.4f}")
+        return model, fitness
 
     def _identify_ss(self, p_values):
         """
@@ -573,9 +623,10 @@ class SystemIdentification:
 
         Returns
         -------
-        control.StateSpace
-            Identified discrete-time state-space model. Its output is the
-            first state component, corresponding to displacement.
+        tuple
+            Identified discrete-time state-space model and its fitness in
+            percent. The model output is the first state component,
+            corresponding to displacement.
 
         Raises
         ------
@@ -598,9 +649,9 @@ class SystemIdentification:
         >>> from contextlib import redirect_stdout
         >>> from io import StringIO
         >>> with redirect_stdout(StringIO()):
-        ...     model = identification._identify_ss([2])
-        >>> isinstance(model, ct.StateSpace)
-        True
+        ...     model, fitness = identification._identify_ss([2])
+        >>> isinstance(model, ct.StateSpace), isinstance(fitness, float)
+        (True, True)
         """
         if np.isscalar(p_values):
             p_values = [p_values]
@@ -627,6 +678,7 @@ class SystemIdentification:
         best_p = None
         best_A = None
         best_B = None
+        best_y_pred = None
 
         for p in p_values:
             if p >= N:
@@ -661,6 +713,7 @@ class SystemIdentification:
                 best_p = p
                 best_A = A
                 best_B = B
+                best_y_pred = x_pred[:, 0]
 
         if best_p is None:
             raise ValueError("All values in 'p' must be smaller than the data length.")
@@ -671,11 +724,13 @@ class SystemIdentification:
         toc = time.time()
         print(f"State-Space identification finished in: {toc - tic:.2f} s")
         print(f"Identification finished. Best p = {self.p} with cost = {best_cost:.4f}")
+        fitness = self._fitness(best_y_pred)
+        print(f"Identification fitness: {fitness:.4f}")
 
         dt = self.t_ref[1] - self.t_ref[0]
         C = np.array([[1, 0]])
         D = np.array([[0]])
-        return ct.ss(self.A, self.B, C, D, dt=dt)
+        return ct.ss(self.A, self.B, C, D, dt=dt), fitness
 
     def identify(self, method="de", **kwargs):
         """
@@ -697,8 +752,8 @@ class SystemIdentification:
 
         Returns
         -------
-        model : control.TransferFunction or control.StateSpace
-            The identified system model.
+        tuple
+            Identified system model and its fitness in percent.
 
         Raises
         ------
@@ -714,11 +769,10 @@ class SystemIdentification:
         >>> from contextlib import redirect_stdout
         >>> from io import StringIO
         >>> with redirect_stdout(StringIO()):
-        ...     model = identification.identify(method="ss", p=[2])
-        >>> isinstance(model, ct.StateSpace)
-        True
+        ...     model, fitness = identification.identify(method="ss", p=[2])
+        >>> isinstance(model, ct.StateSpace), isinstance(fitness, float)
+        (True, True)
         """
-        self._last_method = method.lower()
         self.function_call = 0
         identification_methods = {
             "de": self._identify_de,
@@ -727,7 +781,7 @@ class SystemIdentification:
         }
 
         try:
-            identify_method = identification_methods[self._last_method]
+            identify_method = identification_methods[method.lower()]
         except KeyError:
             raise ValueError(
                 f"Unknown method '{method}'. Use 'de', 'slsqp' or 'ss'."
