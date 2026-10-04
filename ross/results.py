@@ -8685,6 +8685,7 @@ class AmbTfIdentificationResult(Results):
                         line=dict(color=color),
                         name=f"Model - {key}",
                         legendgroup=key,
+                        legendgrouptitle=dict(text=f"Fitness: {self.fits[key]:.2f}%"),
                         hovertemplate=(
                             f"Time ({time_units}): %{{x:.2f}}<br>"
                             + f"Model displacement ({displacement_units}): "

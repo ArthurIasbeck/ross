@@ -616,8 +616,8 @@ def test_run_amb_tf_identification_forwards_p(monkeypatch):
     identification = AmbSystemIdentification(rotor)
     forwarded = {}
 
-    def fake_data_driven_identification(*args):
-        forwarded["p"] = args[-1]
+    def fake_data_driven_identification(**kwargs):
+        forwarded["p"] = kwargs["p"]
 
     monkeypatch.setattr(
         identification,
@@ -628,6 +628,55 @@ def test_run_amb_tf_identification_forwards_p(monkeypatch):
     identification.run_amb_tf_identification("ss", p=[2, 4])
 
     assert forwarded["p"] == [2, 4]
+
+
+@pytest.mark.parametrize(
+    "p, expected_p",
+    [
+        ([1, 2], [1, 2]),
+        (3, [3, 3]),
+        ([[10, 20, 30], [40, 50]], [[10, 20, 30], [40, 50]]),
+    ],
+)
+def test_amb_tf_identification_uses_p_per_direction(monkeypatch, p, expected_p):
+    rotor = rotor_example_amb_simple()
+    identification = AmbSystemIdentification(rotor)
+    forwarded = []
+
+    class FakeSystemIdentification:
+        def __init__(self, i_ref, y_ref, t_ref):
+            pass
+
+        def identify(self, method, p):
+            forwarded.append(p)
+            return object(), 0.0
+
+    monkeypatch.setattr(
+        "ross.bearings.magnetic.amb_system_identification.SystemIdentification",
+        FakeSystemIdentification,
+    )
+    monkeypatch.setattr(
+        "ross.bearings.magnetic.amb_system_identification.get_disturbance",
+        lambda *args, **kwargs: (np.arange(2.0), np.ones(2)),
+    )
+
+    class FakeResponse:
+        I = np.zeros((2, 4))
+        v_amb = np.zeros((2, 4))
+
+    monkeypatch.setattr(rotor, "run_time_response", lambda *args, **kwargs: FakeResponse())
+
+    identification.run_amb_tf_identification("ss", p=p, time_to_converge=None)
+
+    assert forwarded == expected_p
+
+
+@pytest.mark.parametrize("p", [[1], [1, 2, 3]])
+def test_amb_tf_identification_rejects_invalid_p_sequence(p):
+    rotor = rotor_example_amb_simple()
+
+    with pytest.raises(ValueError, match="exactly 2 values"):
+        rotor.run_amb_tf_identification("ss", p=p)
 
 
 @pytest.mark.parametrize("p", [[], [0], [1.5]])
