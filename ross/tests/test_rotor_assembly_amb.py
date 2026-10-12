@@ -3,7 +3,11 @@ import pytest
 import control as ct
 from numpy.testing import assert_allclose, assert_equal
 
-from ross import AmbTfIdentificationResult, SensitivityResults, MagneticBearingElement
+from ross import (
+    AmbSystemIdentificationResult,
+    MagneticBearingElement,
+    SensitivityResults,
+)
 from ross.bearings.magnetic.amb_models import (
     rotor_example_amb_simple,
     rotor_example_amb_general_controllers,
@@ -522,7 +526,7 @@ def test_run_amb_sensitivity():
     )
 
 
-def test_run_amb_tf_identification():
+def test_run_amb_system_identification():
     rotor = rotor_example_amb_simple()
     expected_keys = {
         "AMB_1 (node 1) - v",
@@ -532,7 +536,7 @@ def test_run_amb_tf_identification():
     }
 
     for method in ["de", "slsqp", "ss"]:
-        result = rotor.run_amb_tf_identification(
+        result = rotor.run_amb_system_identification(
             method,
             dt=0.1,
             speed=0,
@@ -543,7 +547,7 @@ def test_run_amb_tf_identification():
             disturbance_step_amplitude=10e-6,
         )
 
-        assert isinstance(result, AmbTfIdentificationResult)
+        assert isinstance(result, AmbSystemIdentificationResult)
         assert result.method == method
         assert set(result.models) == expected_keys
         assert set(result.disturbances) == expected_keys
@@ -582,14 +586,14 @@ def test_run_amb_tf_identification():
             assert np.all(np.isfinite(disturbance))
 
     with pytest.raises(RuntimeError, match="Could not reduce"):
-        rotor.run_amb_tf_identification("reduce", num_modes=10)
+        rotor.run_amb_system_identification("reduce", num_modes=10)
 
 
-def test_run_amb_tf_identification_rejects_unknown_method():
+def test_run_amb_system_identification_rejects_unknown_method():
     rotor = rotor_example_amb_simple()
 
     with pytest.raises(ValueError, match="Unknown method 'unknown'"):
-        rotor.run_amb_tf_identification("unknown")
+        rotor.run_amb_system_identification("unknown")
 
 
 def test_system_identification_ss_accepts_single_and_multiple_p_values(monkeypatch):
@@ -611,7 +615,7 @@ def test_system_identification_ss_accepts_single_and_multiple_p_values(monkeypat
     assert identification.p in [2, 3]
 
 
-def test_run_amb_tf_identification_forwards_p(monkeypatch):
+def test_run_amb_system_identification_forwards_p(monkeypatch):
     rotor = rotor_example_amb_simple()
     identification = AmbSystemIdentification(rotor)
     forwarded = {}
@@ -625,7 +629,7 @@ def test_run_amb_tf_identification_forwards_p(monkeypatch):
         fake_data_driven_identification,
     )
 
-    identification.run_amb_tf_identification("ss", p=[2, 4])
+    identification.run_amb_system_identification("ss", p=[2, 4])
 
     assert forwarded["p"] == [2, 4]
 
@@ -666,7 +670,7 @@ def test_amb_tf_identification_uses_p_per_direction(monkeypatch, p, expected_p):
 
     monkeypatch.setattr(rotor, "run_time_response", lambda *args, **kwargs: FakeResponse())
 
-    identification.run_amb_tf_identification("ss", p=p, time_to_converge=None)
+    identification.run_amb_system_identification("ss", p=p, time_to_converge=None)
 
     assert forwarded == expected_p
 
@@ -676,7 +680,7 @@ def test_amb_tf_identification_rejects_invalid_p_sequence(p):
     rotor = rotor_example_amb_simple()
 
     with pytest.raises(ValueError, match="exactly 2 values"):
-        rotor.run_amb_tf_identification("ss", p=p)
+        rotor.run_amb_system_identification("ss", p=p)
 
 
 @pytest.mark.parametrize("p", [[], [0], [1.5]])
@@ -699,7 +703,7 @@ def test_system_identification_ss_rejects_invalid_p_values(p):
     ],
 )
 def test_amb_tf_identification_reduce_plot_methods_warn(plot_method):
-    result = AmbTfIdentificationResult(
+    result = AmbSystemIdentificationResult(
         models={}, disturbances={}, ref_data={}, method="reduce"
     )
 

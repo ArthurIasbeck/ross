@@ -46,7 +46,7 @@ __all__ = [
     "HarmonicBalanceResults",
     "Level1Results",
     "SensitivityResults",
-    "AmbTfIdentificationResult",
+    "AmbSystemIdentificationResult",
 ]
 
 # Define reference circle for orbits
@@ -8103,7 +8103,7 @@ class ClearanceResults(Results):
         return fig
 
 
-class AmbTfIdentificationResult(Results):
+class AmbSystemIdentificationResult(Results):
     """Store and plot active magnetic bearing transfer-function results.
 
     This class stores the models identified from current and displacement
@@ -8121,7 +8121,8 @@ class AmbTfIdentificationResult(Results):
         must contain ``"original_model"`` and ``"reduced_model"``.
     fits : dict
         Fitness values in percent for the identified models, indexed by the
-        same keys as ``models``. It is empty for ``method="reduce"``.
+        same keys as ``models``. For ``method="reduce"``, it contains one
+        value per input/output frequency response, keyed by its plot label.
     disturbances : dict
         Disturbance signals indexed by the same keys used in ``ref_data``.
         The signals are interpreted in metres.
@@ -8145,7 +8146,7 @@ class AmbTfIdentificationResult(Results):
     >>> t = np.linspace(0.0, 1.0, 11)
     >>> data = {"test": {"time": t, "current": np.zeros(t.size),
     ...                   "displacement": np.zeros(t.size)}}
-    >>> result = AmbTfIdentificationResult(
+    >>> result = AmbSystemIdentificationResult(
     ...     models={"test": ct.tf([1.0], [1.0, 1.0])},
     ...     fits={"test": 95.0},
     ...     disturbances={"test": np.zeros(t.size)},
@@ -8169,7 +8170,9 @@ class AmbTfIdentificationResult(Results):
             ``method`` is ``"reduce"``.
         fits : dict
             Fitness values in percent for the identified models, indexed by
-            the same keys as ``models``. It is empty for ``method="reduce"``.
+            the same keys as ``models``. For ``method="reduce"``, it contains
+            one value per input/output frequency response, keyed by its plot
+            label.
         disturbances : dict
             Disturbance signals indexed by experiment key.
         ref_data : dict
@@ -8186,7 +8189,7 @@ class AmbTfIdentificationResult(Results):
         >>> import numpy as np
         >>> import control as ct
         >>> t = np.arange(5, dtype=float) * 0.1
-        >>> result = AmbTfIdentificationResult(
+        >>> result = AmbSystemIdentificationResult(
         ...     models={"test": ct.tf([1.0], [1.0, 1.0])},
         ...     fits={"test": 95.0},
         ...     disturbances={"test": np.zeros(5)},
@@ -8261,7 +8264,7 @@ class AmbTfIdentificationResult(Results):
         ...     state_model.C[:1, :],
         ...     state_model.D[:1, :1],
         ... )
-        >>> result = rs.AmbTfIdentificationResult(
+        >>> result = rs.AmbSystemIdentificationResult(
         ...     {"original_model": model, "reduced_model": model}, {}, {}, {}, "reduce"
         ... )
         >>> fig = result.plot_reduced_frequency_response(
@@ -8333,7 +8336,7 @@ class AmbTfIdentificationResult(Results):
         >>> rotor = rs.rotor_example()
         >>> scipy_model = rotor._lti(speed=0)
         >>> model = ct.ss(scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D)
-        >>> result = rs.AmbTfIdentificationResult(
+        >>> result = rs.AmbSystemIdentificationResult(
         ...     models={"original_model": model, "reduced_model": model},
         ...     fits={},
         ...     disturbances={}, ref_data={}, method="reduce",
@@ -8387,7 +8390,7 @@ class AmbTfIdentificationResult(Results):
         Examples
         --------
         >>> import ross as rs
-        >>> result = rs.AmbTfIdentificationResult(
+        >>> result = rs.AmbSystemIdentificationResult(
         ...     models={}, fits={}, disturbances={}, ref_data={}, method="reduce",
         ...     channel_names=["Current X", "Current Y"],
         ... )
@@ -8438,7 +8441,7 @@ class AmbTfIdentificationResult(Results):
         Examples
         --------
         >>> import ross as rs
-        >>> result = rs.AmbTfIdentificationResult(
+        >>> result = rs.AmbSystemIdentificationResult(
         ...     models={}, fits={}, disturbances={}, ref_data={}, method="reduce",
         ... )
         >>> titles = ["Input 1 →<br>Output 1", "Input 1 →<br>Output 2"]
@@ -8486,7 +8489,7 @@ class AmbTfIdentificationResult(Results):
         --------
         >>> import numpy as np
         >>> import ross as rs
-        >>> result = rs.AmbTfIdentificationResult(
+        >>> result = rs.AmbSystemIdentificationResult(
         ...     models={}, fits={}, disturbances={}, ref_data={}, method="reduce",
         ... )
         >>> frequency = np.logspace(-1, 1, 5)
@@ -8629,7 +8632,7 @@ class AmbTfIdentificationResult(Results):
         ...     state_model.D[:1, :1],
         ... )
         >>> t = np.linspace(0.0, 1.0, 11)
-        >>> result = AmbTfIdentificationResult(
+        >>> result = AmbSystemIdentificationResult(
         ...     models={"test": model},
         ...     fits={"test": 95.0},
         ...     disturbances={"test": np.zeros(t.size)},
@@ -8759,7 +8762,7 @@ class AmbTfIdentificationResult(Results):
         --------
         >>> import numpy as np
         >>> t = np.linspace(0.0, 1.0, 11)
-        >>> result = AmbTfIdentificationResult(
+        >>> result = AmbSystemIdentificationResult(
         ...     models={},
         ...     fits={"test": 95.0},
         ...     disturbances={"test": np.sin(t)},
@@ -8854,7 +8857,7 @@ class AmbTfIdentificationResult(Results):
         --------
         >>> import numpy as np
         >>> t = np.linspace(0.0, 1.0, 11)
-        >>> result = AmbTfIdentificationResult(
+        >>> result = AmbSystemIdentificationResult(
         ...     models={},
         ...     fits={"test": 95.0},
         ...     disturbances={"test": np.zeros(t.size)},
