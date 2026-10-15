@@ -2,13 +2,15 @@ from copy import deepcopy
 
 import numpy as np
 import control as ct
+from scipy.signal import chirp
 
 from ross.bearings.magnetic.amb_utils import get_ambs
 from ross.bearings.magnetic.reduce_model import ReduceModel
 from ross.bearings.magnetic.system_identification import (
-    get_disturbance,
+    get_ident_disturbance,
     SystemIdentification,
 )
+from ross.utils import compute_freq_resp
 
 
 def simulate_with_optimal_x0(A, B, t_ref, i_ref, y_ref):
@@ -122,6 +124,15 @@ class AmbSystemIdentification:
         disturbance_step_amplitude : float, optional
             Amplitude scale of the generated disturbance steps. Default is
             ``10e-6``.
+        disturbance_chirp_amplitude : float, optional
+            Amplitude of the logarithmic chirp generated for frequency-response
+            analysis. Default is ``10e-6``.
+        disturbance_chirp_min_frequency : float, optional
+            Initial frequency, in Hz, of the logarithmic chirp. Default is
+            ``1.0``.
+        disturbance_chirp_max_frequency : float, optional
+            Final frequency, in Hz, of the logarithmic chirp. Default is
+            ``1000``.
         p : int or array_like of int, optional
             State-space prediction window length. A scalar value is used for
             every magnetic-bearing direction. If an array-like value is
@@ -135,12 +146,17 @@ class AmbSystemIdentification:
         Returns
         -------
         results : ross.AmbSystemIdentificationResult
-            Result object containing ``models``, ``perturbances``,
-            ``ref_data``, ``fits``, and the selected ``method``.  For
-            data-driven methods, ``fits`` contains one fitness value in
-            percent for each identified model.  It is empty for
-            ``method="reduce"``.  The result also provides plotting methods
+            Result object containing ``models``, ``time_data``,
+            ``frequency_data``, ``fit``, and the selected ``method``. The
+            domain data contain the simulated signals and measured/model
+            responses. For
+            data-driven methods, ``fit`` contains ``time`` and ``freq`` maps
+            with one fitness value in percent for each identified model.
+            ``fits`` contains the frequency-response fitness values for
+            ``method="reduce"``. The result also provides plotting methods
             for model responses, disturbances, and reference data.
+            ``time_data`` and ``frequency_data`` are empty for
+            ``method="reduce"``.
 
         Examples
         --------
@@ -180,8 +196,9 @@ class AmbSystemIdentification:
 
         models = {}
         fits = {}
-        ref_data = {}
-        disturbances = {}
+        fit = {"time": {}, "freq": {}}
+        time_data = {}
+        frequency_data = {}
         channel_names = None
 
         if method in ["de", "slsqp", "ss"]:
@@ -189,9 +206,9 @@ class AmbSystemIdentification:
                 **kwargs,
                 "method": method,
                 "models": models,
-                "ref_data": ref_data,
-                "fits": fits,
-                "disturbances": disturbances,
+                "time_data": time_data,
+                "fit": fit,
+                "frequency_data": frequency_data,
             }
             self._run_amb_tf_data_driven_identification(**data_driven_kwargs)
 
@@ -199,8 +216,6 @@ class AmbSystemIdentification:
             reduction_kwargs = {
                 **kwargs,
                 "models": models,
-                "ref_data": ref_data,
-                "disturbances": disturbances,
                 "fits": fits,
             }
             self._run_amb_tf_reduction_identification(**reduction_kwargs)
@@ -215,10 +230,11 @@ class AmbSystemIdentification:
         return AmbSystemIdentificationResult(
             models=models,
             fits=fits,
-            disturbances=disturbances,
-            ref_data=ref_data,
+            fit=fit if method in {"de", "slsqp", "ss"} else None,
             method=method,
             channel_names=channel_names,
+            time_data=time_data,
+            frequency_data=frequency_data,
         )
 
     def _run_amb_tf_reduction_identification(self, **kwargs):
@@ -248,14 +264,8 @@ class AmbSystemIdentification:
             Rotor speed, in rad/s, used to build the original and reduced
             models. Default is 0.
         models : dict
-            Dictionary to receive the reduced models.  It is updated in place
+            Dictionary to receive the reduced models. It is updated in place
             with the ``G_v`` and ``G_w`` models for every magnetic bearing.
-        ref_data : dict
-            Dictionary to receive empty ``current``, ``displacement``, and
-            ``time`` arrays for every generated model.  It is updated in place.
-        disturbances : dict
-            Dictionary to receive an empty disturbance array for every
-            generated model.  It is updated in place.
         fits : dict
             Dictionary to receive one fitness value, in percent, for each
             input/output frequency response. It is updated in place using the
@@ -275,15 +285,13 @@ class AmbSystemIdentification:
         ... )
         >>> rotor = rotor_example_amb_simple()
         >>> identification = AmbSystemIdentification(rotor)
-        >>> models, ref_data, disturbances = {}, {}, {}
+        >>> models = {}
         >>> identification._run_amb_tf_reduction_identification(
         ...     num_modes=10,
         ...     speed=600.0,
         ...     models=models,
-        ...     ref_data=ref_data,
-        ...     disturbances=disturbances,
         ... )
-        >>> len(models) == len(ref_data) == len(disturbances)
+        >>> len(models) == 2
         True
         """
         num_modes = kwargs.get("num_modes", 10)
@@ -293,9 +301,7 @@ class AmbSystemIdentification:
         num_freqs = kwargs.get("num_freqs", 1_000)
 
         models = kwargs["models"]
-        ref_data = kwargs["ref_data"]
         fits = kwargs["fits"]
-        disturbances = kwargs["disturbances"]
 
         original_model_builder = ReduceModel(
             rotor=deepcopy(self.rotor), speed=speed, num_modes=-1
@@ -322,12 +328,7 @@ class AmbSystemIdentification:
             f"{amb.tag} - {axis}" for amb in ambs for axis in ("Current v", "Current w")
         ]
         label_result = AmbSystemIdentificationResult(
-            models={},
-            fits={},
-            disturbances={},
-            ref_data={},
-            method="reduce",
-            channel_names=channel_names,
+            models={}, fits={}, method="reduce", channel_names=channel_names
         )
         num_rows, num_columns = freq_resp_original.shape[:2]
         labels = label_result._get_frequency_response_labels(num_rows, num_columns)
@@ -343,20 +344,7 @@ class AmbSystemIdentification:
                 )
 
         models["reduced_model"] = reduced_model
-        disturbances["reduced_model"] = []
-        ref_data["reduced_model"] = {
-            "current": [],
-            "displacement": [],
-            "time": [],
-        }
-
         models["original_model"] = original_model
-        disturbances["original_model"] = []
-        ref_data["original_model"] = {
-            "current": [],
-            "displacement": [],
-            "time": [],
-        }
 
     def _run_amb_tf_data_driven_identification(self, method, **kwargs):
         """Identify magnetic-bearing models from simulated time-response data.
@@ -394,17 +382,15 @@ class AmbSystemIdentification:
         models : dict
             Dictionary to populate with the identified models.  It is updated
             in place.
-        fits : dict
-            Dictionary to populate with the fitness, in percent, of each
-            identified model.  It is updated in place using the same keys as
-            ``models``.
-        ref_data : dict
-            Dictionary to populate with the ``current``, ``displacement``, and
-            ``time`` arrays for each identification experiment.  It is updated
-            in place.
-        disturbances : dict
-            Dictionary to populate with the disturbance array for each
-            identification experiment.  It is updated in place.
+        fit : dict
+            Dictionary with ``time`` and ``freq`` sub-dictionaries, each
+            populated with the corresponding fitness by identified direction.
+        time_data : dict
+            Dictionary to populate with identification time signals, indexed
+            by identified direction.
+        frequency_data : dict
+            Dictionary to populate with chirp signals and measured/model
+            frequency responses, indexed by identified direction.
         disturbance_changing_time : float, optional
             Duration, in seconds, of each transition in the generated
             disturbance. Default is 0.5.
@@ -442,7 +428,8 @@ class AmbSystemIdentification:
         ... )
         >>> rotor = rotor_example_amb_simple()
         >>> identification = AmbSystemIdentification(rotor)
-        >>> models, ref_data, fits, disturbances = {}, {}, {}, {}
+        >>> models, time_data, frequency_data = {}, {}, {}
+        >>> fit = {"time": {}, "freq": {}}
         >>> identification._run_amb_tf_data_driven_identification(
         ...     "ss",
         ...     dt=1e-3,
@@ -450,15 +437,16 @@ class AmbSystemIdentification:
         ...     time_to_converge=1.0,
         ...     num_modes=10,
         ...     models=models,
-        ...     ref_data=ref_data,
-        ...     fits=fits,
-        ...     disturbances=disturbances,
+        ...     time_data=time_data,
+        ...     fit=fit,
+        ...     frequency_data=frequency_data,
         ...     disturbance_changing_time=0.5,
         ...     disturbance_steady_time=5,
         ...     disturbance_n_steps=60,
         ...     disturbance_step_amplitude=10e-6,
         ... )
-        >>> len(models) == len(fits) == len(ref_data) == len(disturbances)
+        >>> len(models) == len(fit["time"]) == len(fit["freq"])
+        >>> len(models) == len(time_data) == len(frequency_data)
         True
         """
         dt = kwargs.get("dt", 1e-3)
@@ -469,88 +457,184 @@ class AmbSystemIdentification:
         disturbance_steady_time = kwargs.get("disturbance_steady_time", 5)
         disturbance_n_steps = kwargs.get("disturbance_n_steps", 60)
         disturbance_step_amplitude = kwargs.get("disturbance_step_amplitude", 10e-6)
+        disturbance_chirp_amplitude = kwargs.get("disturbance_chirp_amplitude", 10e-6)
+        disturbance_chirp_min_frequency = kwargs.get(
+            "disturbance_chirp_min_frequency", 1.0
+        )
+        disturbance_chirp_max_frequency = kwargs.get(
+            "disturbance_chirp_max_frequency", 1000
+        )
         p = kwargs.get("p", 20)
         models = kwargs["models"]
-        ref_data = kwargs["ref_data"]
-        fits = kwargs["fits"]
-        disturbances = kwargs["disturbances"]
+        time_data = kwargs["time_data"]
+        fit = kwargs["fit"]
+        frequency_data = kwargs["frequency_data"]
 
         ambs = get_ambs(self.rotor)
         n_ambs = len(ambs)
         n_axes = 2 * n_ambs
 
-        if np.isscalar(p):
-            p_values = [p] * n_axes
-        else:
-            try:
-                p_values = list(p)
-            except TypeError as exc:
-                raise ValueError(
-                    "'p' must be a scalar or a sequence with one value for "
-                    f"each magnetic-bearing direction ({n_axes} values)."
-                ) from exc
-
-            if len(p_values) != n_axes:
-                raise ValueError(
-                    "When 'p' is a sequence, it must contain exactly "
-                    f"{n_axes} values, one for each magnetic-bearing direction."
-                )
+        # Validate the p values.
+        p_values = self._process_prediction_window(p, n_axes)
 
         for i in range(n_axes):
-            t, d = get_disturbance(
+            # Compute the disturbance used to determine the time response for identification.
+            t_ident, d_ident = get_ident_disturbance(
                 dt,
                 changing_time=disturbance_changing_time,
                 steady_time=disturbance_steady_time,
                 n_steps=disturbance_n_steps,
                 step_amplitude=disturbance_step_amplitude,
             )
+            t_fr = t_ident.copy()
 
-            d_v = np.zeros((len(t), 2 * n_ambs))
-            d_v[:, i] = d
+            # Determine the time response for identification.
+            d_array_ident = np.zeros((len(t_ident), 2 * n_ambs))
+            d_array_ident[:, i] = d_ident
+            F = np.zeros((t_ident.size, self.rotor.ndof))
 
-            F = np.zeros((t.size, self.rotor.ndof))
-
-            response = self.rotor.run_time_response(
+            response_ident = self.rotor.run_time_response(
                 speed,
                 F,
-                t,
-                disturbance=d_v,
+                t_ident,
+                disturbance=d_array_ident,
                 weight=False,
                 num_modes=num_modes,
             )
 
-            current = response.I[:, i]
-            disp = response.v_amb[:, i]
+            current_ident = response_ident.I[:, i]
+            disp_ident = response_ident.v_amb[:, i]
 
+            # Trim the data.
             if time_to_converge is not None:
-                current = current[t >= time_to_converge]
-                disp = disp[t >= time_to_converge]
-                d = d[t >= time_to_converge]
-                t = t[t >= time_to_converge]
+                current_ident = current_ident[t_ident >= time_to_converge]
+                disp_ident = disp_ident[t_ident >= time_to_converge]
+                d_ident = d_ident[t_ident >= time_to_converge]
+                t_ident = t_ident[t_ident >= time_to_converge]
 
+            # Identify the model.
             amb_system_identification = SystemIdentification(
-                i_ref=current, y_ref=disp, t_ref=t
+                i_ref=current_ident, y_ref=disp_ident, t_ref=t_ident
             )
-            model, fit = amb_system_identification.identify(
+            model, fit_time, model_output_ident = amb_system_identification.identify(
                 method=method, p=p_values[i]
             )
 
+            # Compute the disturbance used to determine the time response for the frequency response.
+            d_fr = disturbance_chirp_amplitude * chirp(
+                t_fr,
+                f0=disturbance_chirp_min_frequency,
+                f1=disturbance_chirp_max_frequency,
+                t1=float(t_fr[-1]),
+                method="logarithmic",
+                phi=-90,
+            )
+            d_array_fr = np.zeros((len(t_fr), n_axes))
+            d_array_fr[:, i] = d_fr
+
+            response_fr = self.rotor.run_time_response(
+                speed,
+                F,
+                t_fr,
+                disturbance=d_array_fr,
+                weight=False,
+                num_modes=num_modes,
+            )
+
+            current_fr = response_fr.I[:, i]
+            disp_fr = response_fr.v_amb[:, i]
+
+            # Trim the data.
+            if time_to_converge is not None:
+                current_fr = current_fr[t_fr >= time_to_converge]
+                disp_fr = disp_fr[t_fr >= time_to_converge]
+                d_fr = d_fr[t_fr >= time_to_converge]
+                t_fr = t_fr[t_fr >= time_to_converge]
+
+            f, abs_fr, phase_fr, fr, _ = compute_freq_resp(t_fr, disp_fr, current_fr)
+
+            model_magnitude, model_phase, _ = ct.frequency_response(
+                model, 2 * np.pi * f
+            )
+            model_fr = np.squeeze(model_magnitude * np.exp(1j * model_phase))
+            fit_freq = self._frequency_response_fitness(fr, model_fr)
+
+            # Store the computed data.
             mma = ambs[i // 2]
-            if i % 2 == 0:
-                models[f"{mma.tag} - v"] = model
-                fits[f"{mma.tag} - v"] = fit
-                disturbances[f"{mma.tag} - v"] = d
-                ref_data[f"{mma.tag} - v"] = {
-                    "current": current,
-                    "displacement": disp,
-                    "time": t,
-                }
-            else:
-                models[f"{mma.tag} - w"] = model
-                fits[f"{mma.tag} - w"] = fit
-                disturbances[f"{mma.tag} - w"] = d
-                ref_data[f"{mma.tag} - w"] = {
-                    "current": current,
-                    "displacement": disp,
-                    "time": t,
-                }
+            key = f"{mma.tag} - v" if i % 2 else f"{mma.tag} - w"
+            models[key] = model
+            fit["time"][key] = fit_time
+            fit["freq"][key] = fit_freq
+            time_data[key] = {
+                "t_ident": t_ident,
+                "d_ident": d_ident,
+                "current_ident": current_ident,
+                "disp_ident": disp_ident,
+                "model_output_ident": model_output_ident,
+            }
+            frequency_data[key] = {
+                "t_fr": t_fr,
+                "d_fr": d_fr,
+                "current_fr": current_fr,
+                "disp_fr": disp_fr,
+                "f": f,
+                "abs_fr": abs_fr,
+                "phase_fr": phase_fr,
+                "fr": fr,
+                "model_magnitude": np.squeeze(model_magnitude),
+                "model_phase": np.squeeze(model_phase),
+            }
+
+    @staticmethod
+    def _frequency_response_fitness(reference, prediction):
+        """Calculate frequency-domain fitness for complex FRF values."""
+        reference = np.asarray(reference)
+        prediction = np.asarray(prediction)
+        reference_norm = np.linalg.norm(reference - np.mean(reference))
+        if reference_norm == 0:
+            return 0.0
+        return float(
+            100 * (1 - np.linalg.norm(reference - prediction) / reference_norm)
+        )
+
+    @staticmethod
+    def _process_prediction_window(p, n_axes):
+        """Return one prediction window value for each magnetic-bearing axis.
+
+        Parameters
+        ----------
+        p : int or array_like of int
+            Scalar window length to apply to every axis, or a sequence with
+            one window length (or candidate collection) per axis.
+        n_axes : int
+            Number of magnetic-bearing directions.
+
+        Returns
+        -------
+        p_values : list
+            Prediction window values in magnetic-bearing direction order.
+
+        Raises
+        ------
+        ValueError
+            If ``p`` is neither a scalar nor a sequence with ``n_axes``
+            entries.
+        """
+        if np.isscalar(p):
+            return [p] * n_axes
+
+        try:
+            p_values = list(p)
+        except TypeError as exc:
+            raise ValueError(
+                "'p' must be a scalar or a sequence with one value for "
+                f"each magnetic-bearing direction ({n_axes} values)."
+            ) from exc
+
+        if len(p_values) != n_axes:
+            raise ValueError(
+                "When 'p' is a sequence, it must contain exactly "
+                f"{n_axes} values, one for each magnetic-bearing direction."
+            )
+
+        return p_values

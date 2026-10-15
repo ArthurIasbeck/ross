@@ -7,7 +7,7 @@ from scipy.optimize import differential_evolution, minimize
 rng = np.random.default_rng(int(time.time()))
 
 
-def get_disturbance(
+def get_ident_disturbance(
     dt,
     changing_time=0.5,
     steady_time=2.0,
@@ -50,7 +50,7 @@ def get_disturbance(
 
     Examples
     --------
-    >>> t, u = get_disturbance(
+    >>> t, u = get_ident_disturbance(
     ...     dt=0.01, changing_time=0.2, steady_time=0.5, n_steps=2
     ... )
     >>> t.shape == u.shape
@@ -509,7 +509,7 @@ class SystemIdentification:
         ...     "ross.bearings.magnetic.system_identification.differential_evolution",
         ...     fake_differential_evolution,
         ... ), redirect_stdout(StringIO()):
-        ...     model, fitness = identification._identify_de()
+        ...     model, fitness, model_output = identification._identify_de()
         >>> isinstance(model, ct.TransferFunction), isinstance(fitness, float)
         (True, True)
         """
@@ -547,7 +547,8 @@ class SystemIdentification:
         response = ct.forced_response(model, T=self.t_ref, U=self.i_ref)
         fitness = self._fitness(response.outputs)
         print(f"Best x: {self.result.x} | Fitness: {fitness:.4f}")
-        return model, fitness
+        model_response = response.outputs
+        return model, fitness, model_response
 
     def _identify_slsqp(self):
         """
@@ -578,7 +579,7 @@ class SystemIdentification:
         ...     "ross.bearings.magnetic.system_identification.minimize",
         ...     fake_minimize,
         ... ), redirect_stdout(StringIO()):
-        ...     model, fitness = identification._identify_slsqp()
+        ...     model, fitness, model_output = identification._identify_slsqp()
         >>> isinstance(model, ct.TransferFunction), isinstance(fitness, float)
         (True, True)
         """
@@ -604,7 +605,8 @@ class SystemIdentification:
         response = ct.forced_response(model, T=self.t_ref, U=self.i_ref)
         fitness = self._fitness(response.outputs)
         print(f"Best x: {self.result.x} | Fitness: {fitness:.4f}")
-        return model, fitness
+        model_response = response.outputs
+        return model, fitness, model_response
 
     def _identify_ss(self, p_values):
         """
@@ -649,7 +651,7 @@ class SystemIdentification:
         >>> from contextlib import redirect_stdout
         >>> from io import StringIO
         >>> with redirect_stdout(StringIO()):
-        ...     model, fitness = identification._identify_ss([2])
+        ...     model, fitness, model_output = identification._identify_ss([2])
         >>> isinstance(model, ct.StateSpace), isinstance(fitness, float)
         (True, True)
         """
@@ -730,7 +732,7 @@ class SystemIdentification:
         dt = self.t_ref[1] - self.t_ref[0]
         C = np.array([[1, 0]])
         D = np.array([[0]])
-        return ct.ss(self.A, self.B, C, D, dt=dt), fitness
+        return ct.ss(self.A, self.B, C, D, dt=dt), fitness, best_y_pred
 
     def identify(self, method="de", **kwargs):
         """
@@ -753,7 +755,8 @@ class SystemIdentification:
         Returns
         -------
         tuple
-            Identified system model and its fitness in percent.
+            Identified system model, its fitness in percent, and the predicted
+            output over the identification time vector.
 
         Raises
         ------
@@ -769,9 +772,12 @@ class SystemIdentification:
         >>> from contextlib import redirect_stdout
         >>> from io import StringIO
         >>> with redirect_stdout(StringIO()):
-        ...     model, fitness = identification.identify(method="ss", p=[2])
-        >>> isinstance(model, ct.StateSpace), isinstance(fitness, float)
-        (True, True)
+        ...     model, fitness, model_output = identification.identify(
+        ...         method="ss", p=[2]
+        ...     )
+        >>> (isinstance(model, ct.StateSpace), isinstance(fitness, float),
+        ...  model_output.shape)
+        (True, True, (20,))
         """
         self.function_call = 0
         identification_methods = {

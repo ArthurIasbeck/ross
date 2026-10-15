@@ -22,7 +22,6 @@ from ross.bearings.magnetic.amb_utils import get_ambs
 
 from ross.plotly_theme import coolwarm_r, tableau_colors
 from pathlib import Path
-from ross.bearings.magnetic.amb_system_identification import simulate_with_optimal_x0
 
 from ross.plotly_theme import tableau_colors, coolwarm_r
 from ross.units import Q_, check_units
@@ -8120,17 +8119,9 @@ class AmbSystemIdentificationResult(Results):
         :class:`control.StateSpace` objects. For ``"reduce"``, the dictionary
         must contain ``"original_model"`` and ``"reduced_model"``.
     fits : dict
-        Fitness values in percent for the identified models, indexed by the
-        same keys as ``models``. For ``method="reduce"``, it contains one
-        value per input/output frequency response, keyed by its plot label.
-    disturbances : dict
-        Disturbance signals indexed by the same keys used in ``ref_data``.
-        The signals are interpreted in metres.
-    ref_data : dict
-        Reference data indexed by model or experiment key. Each entry must
-        contain ``"time"``, ``"current"``, and ``"displacement"`` arrays.
-        Time is expressed in seconds, current in amperes, and displacement in
-        metres.
+        For ``method="reduce"``, frequency-response fitness values indexed
+        by the response plot labels. Data-driven fitness values are stored in
+        ``fit``.
     method : str
         Identification method used to generate the models. Supported values
         are ``"de"``, ``"slsqp"``, ``"ss"``, and ``"reduce"``.
@@ -8138,27 +8129,38 @@ class AmbSystemIdentificationResult(Results):
         Names for model input channels. When provided with a square MIMO
         model, these names are used to label current and displacement
         channels in the reduced frequency-response plot.
+    fit : dict, optional
+        For data-driven identification, contains ``time`` and ``freq`` mappings
+        from direction keys to fitness percentages.
+    time_data, frequency_data : dict, optional
+        Time-domain and frequency-domain experiment arrays indexed by
+        identified direction. Each defaults to an empty dictionary.
 
     Examples
     --------
     >>> import numpy as np
     >>> import control as ct
     >>> t = np.linspace(0.0, 1.0, 11)
-    >>> data = {"test": {"time": t, "current": np.zeros(t.size),
-    ...                   "displacement": np.zeros(t.size)}}
     >>> result = AmbSystemIdentificationResult(
     ...     models={"test": ct.tf([1.0], [1.0, 1.0])},
     ...     fits={"test": 95.0},
-    ...     disturbances={"test": np.zeros(t.size)},
-    ...     ref_data=data,
     ...     method="de",
     ... )
     >>> result.method
     'de'
+    >>> result.frequency_data
+    {}
     """
 
     def __init__(
-        self, models, fits, disturbances, ref_data, method, channel_names=None
+        self,
+        models,
+        fits,
+        method,
+        channel_names=None,
+        fit=None,
+        time_data=None,
+        frequency_data=None,
     ):
         """Initialize an active magnetic bearing identification result.
 
@@ -8169,20 +8171,20 @@ class AmbSystemIdentificationResult(Results):
             containing ``"original_model"`` and ``"reduced_model"`` when
             ``method`` is ``"reduce"``.
         fits : dict
-            Fitness values in percent for the identified models, indexed by
-            the same keys as ``models``. For ``method="reduce"``, it contains
-            one value per input/output frequency response, keyed by its plot
-            label.
-        disturbances : dict
-            Disturbance signals indexed by experiment key.
-        ref_data : dict
-            Reference data indexed by experiment key. Each entry contains
-            ``"time"``, ``"current"``, and ``"displacement"`` arrays.
+            For ``method="reduce"``, frequency-response fitness values indexed
+            by the response plot labels. Data-driven fitness values are stored
+            in ``fit``.
         method : str
             Identification method. Supported values are ``"de"``, ``"slsqp"``,
             ``"ss"``, and ``"reduce"``.
         channel_names : list of str, optional
             Optional names for the input channels of a reduced MIMO model.
+        fit : dict, optional
+            For data-driven identification, contains ``time`` and ``freq``
+            mappings from direction keys to fitness percentages.
+        time_data, frequency_data : dict, optional
+            Time-domain and frequency-domain experiment arrays indexed by
+            identified direction. Each defaults to an empty dictionary.
 
         Examples
         --------
@@ -8192,711 +8194,101 @@ class AmbSystemIdentificationResult(Results):
         >>> result = AmbSystemIdentificationResult(
         ...     models={"test": ct.tf([1.0], [1.0, 1.0])},
         ...     fits={"test": 95.0},
-        ...     disturbances={"test": np.zeros(5)},
-        ...     ref_data={"test": {"time": t, "current": np.zeros(5),
-        ...                       "displacement": np.zeros(5)}},
         ...     method="de",
         ... )
         >>> result.channel_names is None
         True
+        >>> result.frequency_data
+        {}
         """
         self.models = models
         self.fits = fits
-        self.disturbances = disturbances
-        self.ref_data = ref_data
+        self.fit = fit
         self.method = method
         self.channel_names = channel_names
+        self.time_data = {} if time_data is None else time_data
+        self.frequency_data = {} if frequency_data is None else frequency_data
 
-    def plot_reduced_frequency_response(
+    def plot_time_data(
         self,
-        frequency_units="rad/s",
-        omega_min=0.01,
-        omega_max=10_000,
-        num_freqs=1000,
-        fig=None,
-        fig_kwargs=None,
-    ):
-        """Plot the original and reduced frequency responses.
-
-        This method is intended for results created with ``method="reduce"``.
-        It compares the magnitude, in decibels, of the original and reduced
-        MIMO models over a logarithmically spaced angular-frequency range.
-
-        Parameters
-        ----------
-        frequency_units : str, optional
-            Frequency units. Default is "rad/s".
-        omega_min : float, optional
-            Minimum angular frequency in rad/s. Default is 0.01.
-        omega_max : float, optional
-            Maximum angular frequency in rad/s. Default is 10_000.
-        num_freqs : int, optional
-            Number of frequency points. Default is 1000.
-        fig : plotly.graph_objects.Figure, optional
-            Plotly figure to which the traces will be added. If None, a new
-            figure will be created.
-        fig_kwargs : dict, optional
-            Dictionary of keyword arguments to customize the Plotly figure.
-            Default is None.
-
-        Returns
-        -------
-        fig : plotly.graph_objects.Figure
-            Plotly figure containing the frequency responses.
-
-        Notes
-        -----
-        If the result was not generated with ``method="reduce"``, the method
-        returns ``None`` and emits a warning.
-
-        Examples
-        --------
-        >>> import ross as rs
-        >>> import control as ct
-        >>> rotor = rs.rotor_example()
-        >>> scipy_model = rotor._lti(speed=0)
-        >>> state_model = ct.ss(
-        ...     scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D
-        ... )
-        >>> model = ct.ss(
-        ...     state_model.A,
-        ...     state_model.B[:, :1],
-        ...     state_model.C[:1, :],
-        ...     state_model.D[:1, :1],
-        ... )
-        >>> result = rs.AmbSystemIdentificationResult(
-        ...     {"original_model": model, "reduced_model": model}, {}, {}, {}, "reduce"
-        ... )
-        >>> fig = result.plot_reduced_frequency_response(
-        ...     omega_max=100.0, num_freqs=20
-        ... )
-        >>> len(fig.data)
-        2
-        """
-        if self.method != "reduce":
-            warn(
-                "plot_reduced_frequency_response should only be used when the method is 'reduce'. "
-                "Use the other plotting methods (plot_model_response, plot_disturbances, or plot_ref_data)."
-            )
-            return None
-
-        response_data = self._compute_reduced_frequency_response(
-            frequency_units, omega_min, omega_max, num_freqs
-        )
-        num_rows, num_columns = response_data["reduced_mag"].shape[:2]
-        subplot_titles = self._get_frequency_response_labels(num_rows, num_columns)
-        fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
-        fig = self._create_frequency_response_figure(
-            num_rows, num_columns, subplot_titles, fig
-        )
-        self._add_frequency_response_traces(fig, response_data, frequency_units)
-        fig.update_layout(title="Frequency Response", **fig_kwargs)
-
-        return fig
-
-    def _compute_reduced_frequency_response(
-        self, frequency_units, omega_min, omega_max, num_freqs
-    ):
-        """Compute the original and reduced model frequency responses.
-
-        The responses are evaluated over a logarithmically spaced angular
-        frequency range. Magnitude data returned by ``python-control`` is
-        normalized to the ``[output, input, frequency]`` shape used by the
-        plotting methods, including for SISO models.
-
-        Parameters
-        ----------
-        frequency_units : str
-            Units used to convert the frequency axis.
-        omega_min : float
-            Minimum angular frequency in rad/s.
-        omega_max : float
-            Maximum angular frequency in rad/s.
-        num_freqs : int
-            Number of frequency points.
-
-        Returns
-        -------
-        response_data : dict
-            Dictionary containing the frequency-response data:
-
-            - ``"frequency"`` : ndarray
-                Frequency values converted to ``frequency_units``.
-            - ``"original_mag"`` : ndarray
-                Original model magnitudes with shape
-                ``[output, input, frequency]``.
-            - ``"reduced_mag"`` : ndarray
-                Reduced model magnitudes with shape
-                ``[output, input, frequency]``.
-
-        Examples
-        --------
-        >>> import control as ct
-        >>> import ross as rs
-        >>> rotor = rs.rotor_example()
-        >>> scipy_model = rotor._lti(speed=0)
-        >>> model = ct.ss(scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D)
-        >>> result = rs.AmbSystemIdentificationResult(
-        ...     models={"original_model": model, "reduced_model": model},
-        ...     fits={},
-        ...     disturbances={}, ref_data={}, method="reduce",
-        ... )
-        >>> response_data = result._compute_reduced_frequency_response(
-        ...     "rad/s", 0.1, 10.0, 5
-        ... )
-        >>> sorted(response_data)
-        ['frequency', 'original_mag', 'reduced_mag']
-        >>> response_data["reduced_mag"].shape[-1]
-        5
-        """
-        omega = np.logspace(np.log10(omega_min), np.log10(omega_max), num_freqs)
-        frequency = Q_(omega, "rad/s").to(frequency_units).m
-
-        original_mag, _, _ = ct.frequency_response(self.models["original_model"], omega)
-        reduced_mag, _, _ = ct.frequency_response(self.models["reduced_model"], omega)
-
-        # python-control squeezes SISO responses to [frequency]. Keep the
-        # common [output, input, frequency] representation used by the plot.
-        if original_mag.ndim == 1:
-            original_mag = original_mag[None, None, :]
-        if reduced_mag.ndim == 1:
-            reduced_mag = reduced_mag[None, None, :]
-
-        return {
-            "frequency": frequency,
-            "original_mag": original_mag,
-            "reduced_mag": reduced_mag,
-        }
-
-    def _get_frequency_response_labels(self, num_rows, num_columns):
-        """Build subplot titles for the reduced frequency response.
-
-        Channel names supplied to the result are used when they describe a
-        square MIMO model. Otherwise, generic current and displacement names
-        are generated from the number of inputs and outputs.
-
-        Parameters
-        ----------
-        num_rows : int
-            Number of subplot rows, corresponding to model inputs.
-        num_columns : int
-            Number of subplot columns, corresponding to model outputs.
-
-        Returns
-        -------
-        subplot_titles : list of str
-            Titles for the subplots in row-major order.
-
-        Examples
-        --------
-        >>> import ross as rs
-        >>> result = rs.AmbSystemIdentificationResult(
-        ...     models={}, fits={}, disturbances={}, ref_data={}, method="reduce",
-        ...     channel_names=["Current X", "Current Y"],
-        ... )
-        >>> result._get_frequency_response_labels(2, 2)
-        ['Current X →<br>Displacement X', 'Current X →<br>Displacement Y', 'Current Y →<br>Displacement X', 'Current Y →<br>Displacement Y']
-        """
-        if (
-            self.channel_names is not None
-            and len(self.channel_names) == num_rows
-            and num_rows == num_columns
-        ):
-            input_names = self.channel_names
-            output_names = [
-                name.replace("Current ", "Displacement ") for name in self.channel_names
-            ]
-        else:
-            input_names = [f"Current {index + 1}" for index in range(num_columns)]
-            output_names = [f"Displacement {index + 1}" for index in range(num_rows)]
-
-        return [
-            f"{input_names[row]} →<br>{output_names[column]}"
-            for row in range(num_rows)
-            for column in range(num_columns)
-        ]
-
-    @staticmethod
-    def _create_frequency_response_figure(
-        num_rows, num_columns, subplot_titles, fig=None
-    ):
-        """Create the subplot figure unless one was supplied by the caller.
-
-        Parameters
-        ----------
-        num_rows : int
-            Number of rows in the subplot grid.
-        num_columns : int
-            Number of columns in the subplot grid.
-        subplot_titles : list of str
-            Titles assigned to the subplots in row-major order.
-        fig : plotly.graph_objects.Figure, optional
-            Existing figure to reuse. If provided, it is returned unchanged.
-
-        Returns
-        -------
-        fig : plotly.graph_objects.Figure
-            The supplied figure or a newly created subplot figure.
-
-        Examples
-        --------
-        >>> import ross as rs
-        >>> result = rs.AmbSystemIdentificationResult(
-        ...     models={}, fits={}, disturbances={}, ref_data={}, method="reduce",
-        ... )
-        >>> titles = ["Input 1 →<br>Output 1", "Input 1 →<br>Output 2"]
-        >>> fig = result._create_frequency_response_figure(1, 2, titles)
-        >>> len(fig.data)
-        0
-        >>> len(fig.layout.annotations)
-        2
-        """
-        if fig is not None:
-            return fig
-
-        return make_subplots(
-            rows=num_rows,
-            cols=num_columns,
-            shared_xaxes=True,
-            subplot_titles=subplot_titles,
-        )
-
-    @staticmethod
-    def _add_frequency_response_traces(fig, response_data, frequency_units):
-        """Add original and reduced response traces to a subplot figure.
-
-        Magnitudes are converted to decibels before being plotted. Two traces
-        are added for each input-output pair: one for the reduced model and
-        one for the original model. The first pair displays the legend entries
-        for both trace groups. The figure is modified in place.
-
-        Parameters
-        ----------
-        fig : plotly.graph_objects.Figure
-            Figure to which the traces and axis configurations are added.
-        response_data : dict
-            Frequency-response data returned by
-            ``_compute_reduced_frequency_response``.
-        frequency_units : str
-            Units displayed on the frequency axis.
-
-        Returns
-        -------
-        None
-            The figure is modified in place.
-
-        Examples
-        --------
-        >>> import numpy as np
-        >>> import ross as rs
-        >>> result = rs.AmbSystemIdentificationResult(
-        ...     models={}, fits={}, disturbances={}, ref_data={}, method="reduce",
-        ... )
-        >>> frequency = np.logspace(-1, 1, 5)
-        >>> response_data = {
-        ...     "frequency": frequency,
-        ...     "original_mag": np.ones((2, 2, 5)),
-        ...     "reduced_mag": np.ones((2, 2, 5)),
-        ... }
-        >>> fig = result._create_frequency_response_figure(
-        ...     2, 2, ["Input 1", "Input 2", "Input 3", "Input 4"]
-        ... )
-        >>> result._add_frequency_response_traces(fig, response_data, "rad/s")
-        >>> len(fig.data)
-        8
-        """
-        frequency = response_data["frequency"]
-        original_mag = response_data["original_mag"]
-        reduced_mag = response_data["reduced_mag"]
-        num_rows, num_columns = reduced_mag.shape[:2]
-
-        for row in range(num_rows):
-            for column in range(num_columns):
-                # python-control stores MIMO responses as
-                # [output, input, frequency]. Rows in this figure represent
-                # inputs and columns represent outputs, so the first two
-                # indices must be transposed here.
-                original_mag_ij = original_mag[column, row, :]
-                reduce_mag_ij = reduced_mag[column, row, :]
-
-                original_mag_db = 20 * np.log10(
-                    np.maximum(original_mag_ij, np.finfo(float).tiny)
-                )
-                reduce_mag_db = 20 * np.log10(
-                    np.maximum(reduce_mag_ij, np.finfo(float).tiny)
-                )
-
-                showlegend = row == 0 and column == 0
-                fig.add_trace(
-                    go.Scatter(
-                        x=frequency,
-                        y=reduce_mag_db,
-                        mode="lines",
-                        line=dict(color=tableau_colors["blue"]),
-                        name="Reduced",
-                        showlegend=showlegend,
-                        legendgroup="reduced",
-                        hovertemplate=(
-                            f"Frequency ({frequency_units}): %{{x:.2e}}<br>"
-                            + "Magnitude (dB): %{y:.2f}<extra>Reduced</extra>"
-                        ),
-                    ),
-                    row=row + 1,
-                    col=column + 1,
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=frequency,
-                        y=original_mag_db,
-                        mode="lines",
-                        line=dict(color=tableau_colors["orange"], dash="dash"),
-                        name="Original",
-                        showlegend=showlegend,
-                        legendgroup="original",
-                        hovertemplate=(
-                            f"Frequency ({frequency_units}): %{{x:.2e}}<br>"
-                            + "Magnitude (dB): %{y:.2f}<extra>Original</extra>"
-                        ),
-                    ),
-                    row=row + 1,
-                    col=column + 1,
-                )
-
-                fig.update_xaxes(
-                    type="log",
-                    title_text=(
-                        f"Frequency ({frequency_units})"
-                        if row == num_rows - 1
-                        else None
-                    ),
-                    row=row + 1,
-                    col=column + 1,
-                )
-                fig.update_yaxes(
-                    title_text="Magnitude (dB)" if column == 0 else None,
-                    row=row + 1,
-                    col=column + 1,
-                )
-
-    def plot_model_response(
-        self,
-        displacement_units="m",
         time_units="s",
-        fig=None,
-        fig_kwargs=None,
-    ):
-        """Plot model and reference responses.
-
-        For transfer-function methods, the model response is calculated with
-        :func:`control.forced_response`. For state-space identification, the
-        response is calculated with the stored discrete state-space matrices
-        and the reference input data.
-
-        Parameters
-        ----------
-        displacement_units : str, optional
-            Displacement units. Default is "m".
-        time_units : str, optional
-            Time units. Default is "s".
-        fig : plotly.graph_objects.Figure, optional
-            Plotly figure to which the traces will be added. If None, a new
-            figure will be created.
-        fig_kwargs : dict, optional
-            Dictionary of keyword arguments to customize the Plotly figure.
-            Default is None.
-
-        Returns
-        -------
-        fig : plotly.graph_objects.Figure
-            Plotly figure containing the model and reference responses.
-
-        Notes
-        -----
-        If ``method="reduce"``, the method returns ``None`` and emits a
-        warning because reduced models do not use time-domain simulation data.
-
-        Examples
-        --------
-        >>> import ross as rs
-        >>> import numpy as np
-        >>> import control as ct
-        >>> rotor = rs.rotor_example()
-        >>> scipy_model = rotor._lti(speed=0)
-        >>> state_model = ct.ss(
-        ...     scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D
-        ... )
-        >>> model = ct.ss(
-        ...     state_model.A,
-        ...     state_model.B[:, :1],
-        ...     state_model.C[:1, :],
-        ...     state_model.D[:1, :1],
-        ... )
-        >>> t = np.linspace(0.0, 1.0, 11)
-        >>> result = AmbSystemIdentificationResult(
-        ...     models={"test": model},
-        ...     fits={"test": 95.0},
-        ...     disturbances={"test": np.zeros(t.size)},
-        ...     ref_data={"test": {"time": t, "current": np.zeros(t.size),
-        ...                       "displacement": np.zeros(t.size)}},
-        ...     method="de",
-        ... )
-        >>> fig = result.plot_model_response()
-        >>> len(fig.data)
-        2
-        """
-        if self.method == "reduce":
-            warn(
-                "The 'reduce' method produces the system model directly without "
-                "using simulation data. Use plot_reduced_response()."
-            )
-            return None
-
-        fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
-        fig = go.Figure() if fig is None else fig
-        colors = list(tableau_colors.values())
-
-        for index, (key, model) in enumerate(self.models.items()):
-            u = self.ref_data[key]["current"]
-            time_seconds = self.ref_data[key]["time"]
-            displacement_reference = self.ref_data[key]["displacement"]
-            time = Q_(time_seconds, "s").to(time_units).m
-            y_real = Q_(displacement_reference, "m").to(displacement_units).m
-
-            y_sim = None
-            if self.method in ["de", "slsqp"]:
-                _, y_sim = ct.forced_response(model, T=time_seconds, U=u)
-
-            elif self.method == "ss":
-                x_pred, _ = simulate_with_optimal_x0(
-                    model.A, model.B, time_seconds, u, displacement_reference
-                )
-                y_sim = x_pred[:, 0]
-
-            if y_sim is not None:
-                color = colors[index % len(colors)]
-                rgb = tuple(int(color[i : i + 2], 16) for i in (1, 3, 5))
-                dark_color = "#" + "".join(
-                    f"{int(channel * 0.8):02x}" for channel in rgb
-                )
-                y_sim = Q_(y_sim, "m").to(displacement_units).m
-
-                fig.add_trace(
-                    go.Scatter(
-                        x=time,
-                        y=y_sim,
-                        mode="lines",
-                        line=dict(color=color),
-                        name=f"Model - {key}",
-                        legendgroup=key,
-                        legendgrouptitle=dict(text=f"Fitness: {self.fits[key]:.2f}%"),
-                        hovertemplate=(
-                            f"Time ({time_units}): %{{x:.2f}}<br>"
-                            + f"Model displacement ({displacement_units}): "
-                            + "%{y:.2e}<extra></extra>"
-                        ),
-                    )
-                )
-                fig.add_trace(
-                    go.Scatter(
-                        x=time,
-                        y=y_real,
-                        mode="lines",
-                        line=dict(color=dark_color, dash="dash"),
-                        name=f"Reference - {key}",
-                        legendgroup=key,
-                        hovertemplate=(
-                            f"Time ({time_units}): %{{x:.2f}}<br>"
-                            + f"Reference displacement ({displacement_units}): "
-                            + "%{y:.2e}<extra></extra>"
-                        ),
-                    )
-                )
-
-        fig.update_layout(
-            title="Model Response",
-            xaxis_title=f"Time ({time_units})",
-            yaxis_title=f"Displacement ({displacement_units})",
-            hovermode="x unified",
-            **fig_kwargs,
-        )
-
-        return fig
-
-    def plot_disturbances(
-        self,
         disturbance_units="m",
-        time_units="s",
-        fig=None,
-        fig_kwargs=None,
-    ):
-        """Plot the disturbances used in the identification.
-
-        Disturbances are plotted using the time vector stored in the
-        corresponding reference-data entry.
-
-        Parameters
-        ----------
-        disturbance_units : str, optional
-            Disturbance units. Default is "m".
-        time_units : str, optional
-            Time units. Default is "s".
-        fig : plotly.graph_objects.Figure, optional
-            Plotly figure to which traces will be added. If None, a new figure
-            will be created.
-        fig_kwargs : dict, optional
-            Dictionary of keyword arguments to customize the Plotly figure.
-            Default is None.
-
-        Returns
-        -------
-        fig : plotly.graph_objects.Figure
-            Plotly figure containing the disturbances.
-
-        Notes
-        -----
-        If ``method="reduce"``, the method returns ``None`` and emits a
-        warning because reduction results do not contain simulation
-        disturbances.
-
-        Examples
-        --------
-        >>> import numpy as np
-        >>> t = np.linspace(0.0, 1.0, 11)
-        >>> result = AmbSystemIdentificationResult(
-        ...     models={},
-        ...     fits={"test": 95.0},
-        ...     disturbances={"test": np.sin(t)},
-        ...     ref_data={"test": {"time": t, "current": np.zeros(t.size),
-        ...                       "displacement": np.zeros(t.size)}},
-        ...     method="de",
-        ... )
-        >>> fig = result.plot_disturbances()
-        >>> len(fig.data)
-        1
-        """
-        if self.method == "reduce":
-            warn(
-                "The 'reduce' method produces the system model directly without "
-                "using simulation data. Use plot_reduced_response()."
-            )
-            return None
-
-        if fig is None:
-            fig = go.Figure()
-
-        fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
-
-        for key, disturbance in self.disturbances.items():
-            # Use the time array provided in ref_data
-            time = Q_(self.ref_data[key]["time"], "s").to(time_units).m
-            disturbance_values = Q_(disturbance, "m").to(disturbance_units).m
-            fig.add_trace(
-                go.Scatter(
-                    x=time,
-                    y=disturbance_values,
-                    mode="lines",
-                    name=key,
-                    hovertemplate=(
-                        f"Time ({time_units}): %{{x:.2f}}<br>"
-                        + f"Disturbance amplitude ({disturbance_units}): "
-                        + "%{y:.2e}<extra></extra>"
-                    ),
-                )
-            )
-
-        fig.update_layout(
-            title="Disturbances",
-            xaxis_title=f"Time ({time_units})",
-            yaxis_title=f"Disturbance amplitude ({disturbance_units})",
-            hovermode="x unified",
-            **fig_kwargs,
-        )
-
-        return fig
-
-    def plot_ref_data(
-        self,
         current_units="A",
         displacement_units="m",
-        time_units="s",
         fig=None,
         fig_kwargs=None,
     ):
-        """Plot the reference data (current and displacement) for each set.
+        """Plot identification signals and compare measured and model output.
 
-        The current and displacement signals are shown in separate rows and
-        share the time axis.
+        The figure has separate rows for disturbance, current, and
+        displacement. The last row overlays the measured displacement and the
+        output returned by the identification method.
 
         Parameters
         ----------
-        current_units : str, optional
-            Current units. Default is "A".
-        displacement_units : str, optional
-            Displacement units. Default is "m".
         time_units : str, optional
-            Time units. Default is "s".
+            Units for the time axis. Default is "s".
+        disturbance_units : str, optional
+            Units for the applied disturbance. Default is "m".
+        current_units : str, optional
+            Units for the measured current. Default is "A".
+        displacement_units : str, optional
+            Units for measured and identified displacement. Default is "m".
         fig : plotly.graph_objects.Figure, optional
-            Plotly figure to which the traces will be added. If None, a new
-            figure will be created.
+            Three-row subplot figure to which traces will be added. If None,
+            a new figure is created.
         fig_kwargs : dict, optional
-            Dictionary of keyword arguments to customize the Plotly figure.
-            Default is None.
+            Additional Plotly layout options.
 
         Returns
         -------
-        fig : plotly.graph_objects.Figure
-            Plotly figure containing the reference data.
-
-        Notes
-        -----
-        If ``method="reduce"``, the method returns ``None`` and emits a
-        warning because reduction results do not contain time-domain reference
-        data.
-
-        Examples
-        --------
-        >>> import numpy as np
-        >>> t = np.linspace(0.0, 1.0, 11)
-        >>> result = AmbSystemIdentificationResult(
-        ...     models={},
-        ...     fits={"test": 95.0},
-        ...     disturbances={"test": np.zeros(t.size)},
-        ...     ref_data={"test": {"time": t, "current": np.zeros(t.size),
-        ...                       "displacement": np.zeros(t.size)}},
-        ...     method="de",
-        ... )
-        >>> fig = result.plot_ref_data()
-        >>> len(fig.data)
-        2
+        fig : plotly.graph_objects.Figure or None
+            Figure containing the time-domain data, or ``None`` when this
+            result has no time-domain experiments.
         """
-        if self.method == "reduce":
-            warn(
-                "The 'reduce' method produces the system model directly without "
-                "using simulation data. Use plot_reduced_response()."
-            )
+        if not self.time_data:
+            warn("No time-domain data is available for this result.")
             return None
 
         fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True) if fig is None else fig
-        colors = list(tableau_colors.values())
+        if fig is None:
+            fig = make_subplots(
+                rows=3,
+                cols=1,
+                shared_xaxes=True,
+                subplot_titles=("Disturbance", "Current", "Displacement"),
+            )
 
-        for color_index, (key, data) in enumerate(self.ref_data.items()):
-            time = Q_(data["time"], "s").to(time_units).m
-            current = Q_(data["current"], "A").to(current_units).m
-            displacement = Q_(data["displacement"], "m").to(displacement_units).m
-            color = colors[color_index % len(colors)]
+        colors = list(tableau_colors.values())
+        for index, (key, data) in enumerate(self.time_data.items()):
+            color = colors[index % len(colors)]
+            time_fitness = (
+                self.fit.get("time", {}).get(key) if self.fit is not None else None
+            )
+            group_title = (
+                {"text": f"Fitness: {time_fitness:.2f}%"}
+                if time_fitness is not None
+                else None
+            )
+            time = Q_(data["t_ident"], "s").to(time_units).m
+            disturbance = Q_(data["d_ident"], "m").to(disturbance_units).m
+            current = Q_(data["current_ident"], "A").to(current_units).m
+            displacement = Q_(data["disp_ident"], "m").to(displacement_units).m
+            model_output = Q_(data["model_output_ident"], "m").to(displacement_units).m
 
             fig.add_trace(
                 go.Scatter(
                     x=time,
-                    y=current,
+                    y=disturbance,
                     mode="lines",
-                    line=dict(color=color),
-                    name=key,
+                    name=f"Disturbance - {key}",
                     legendgroup=key,
+                    legendgrouptitle=group_title,
+                    line=dict(color=color),
                     hovertemplate=(
-                        f"Time ({time_units}): %{{x:.2f}}<br>"
-                        + f"Current ({current_units}): %{{y:.2e}}<extra></extra>"
+                        f"Time ({time_units}): %{{x:.3g}}<br>"
+                        + f"Disturbance ({disturbance_units}): %{{y:.3e}}"
+                        + "<extra></extra>"
                     ),
                 ),
                 row=1,
@@ -8905,26 +8297,891 @@ class AmbSystemIdentificationResult(Results):
             fig.add_trace(
                 go.Scatter(
                     x=time,
-                    y=displacement,
+                    y=current,
                     mode="lines",
-                    line=dict(color=color),
-                    name=key,
+                    name=f"Current - {key}",
                     legendgroup=key,
-                    showlegend=False,
+                    line=dict(color=color),
                     hovertemplate=(
-                        f"Time ({time_units}): %{{x:.2f}}<br>"
-                        + f"Displacement ({displacement_units}): %{{y:.2e}}<extra></extra>"
+                        f"Time ({time_units}): %{{x:.3g}}<br>"
+                        + f"Current ({current_units}): %{{y:.3e}}<extra></extra>"
                     ),
                 ),
                 row=2,
                 col=1,
             )
+            fig.add_trace(
+                go.Scatter(
+                    x=time,
+                    y=displacement,
+                    mode="lines",
+                    name=f"Measured displacement - {key}",
+                    legendgroup=key,
+                    line=dict(color=color, dash="dash"),
+                    hovertemplate=(
+                        f"Time ({time_units}): %{{x:.3g}}<br>"
+                        + "Measured displacement "
+                        + f"({displacement_units}): %{{y:.3e}}<extra></extra>"
+                    ),
+                ),
+                row=3,
+                col=1,
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=time,
+                    y=model_output,
+                    mode="lines",
+                    name=f"Model output - {key}",
+                    legendgroup=key,
+                    line=dict(color=color),
+                    hovertemplate=(
+                        f"Time ({time_units}): %{{x:.3g}}<br>"
+                        + "Model displacement "
+                        + f"({displacement_units}): %{{y:.3e}}<extra></extra>"
+                    ),
+                ),
+                row=3,
+                col=1,
+            )
 
-        fig.update_xaxes(title_text=f"Time ({time_units})", row=2, col=1)
-        fig.update_yaxes(title_text=f"Current ({current_units})", row=1, col=1)
+        fig.update_xaxes(title_text=f"Time ({time_units})", row=3, col=1)
+        fig.update_yaxes(title_text=f"Disturbance ({disturbance_units})", row=1, col=1)
+        fig.update_yaxes(title_text=f"Current ({current_units})", row=2, col=1)
         fig.update_yaxes(
-            title_text=f"Displacement ({displacement_units})", row=2, col=1
+            title_text=f"Displacement ({displacement_units})", row=3, col=1
         )
-        fig.update_layout(title="Reference data", hovermode="x unified", **fig_kwargs)
-
+        fig.update_layout(title="Identification Time Data", **fig_kwargs)
         return fig
+
+    def plot_frequency_data(
+        self,
+        frequency_units="Hz",
+        fig=None,
+        fig_kwargs=None,
+    ):
+        """Plot measured and model frequency-response magnitude and phase.
+
+        Each identified direction contributes measured and model curves in
+        separate magnitude and phase rows. The frequency axis is logarithmic;
+        nonpositive frequencies, including the DC point, are omitted. The
+        measured and model phase curves are unwrapped for display.
+
+        Parameters
+        ----------
+        frequency_units : str, optional
+            Units for the frequency axis. Default is "Hz".
+        fig : plotly.graph_objects.Figure, optional
+            Two-row subplot figure to which traces will be added. If None, a
+            new figure is created.
+        fig_kwargs : dict, optional
+            Additional Plotly layout options.
+
+        Returns
+        -------
+        fig : plotly.graph_objects.Figure or None
+            Figure containing the frequency-domain data, or ``None`` when
+            this result has no frequency-domain experiments.
+        """
+        if not self.frequency_data:
+            warn("No frequency-domain data is available for this result.")
+            return None
+
+        fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
+        if fig is None:
+            fig = make_subplots(
+                rows=2,
+                cols=1,
+                shared_xaxes=True,
+                subplot_titles=("Magnitude", "Phase"),
+            )
+
+        colors = list(tableau_colors.values())
+        for index, (key, data) in enumerate(self.frequency_data.items()):
+            frequency_fitness = (
+                self.fit.get("freq", {}).get(key) if self.fit is not None else None
+            )
+            group_title = (
+                {"text": f"Fitness: {frequency_fitness:.2f}%"}
+                if frequency_fitness is not None
+                else None
+            )
+            frequency = Q_(data["f"], "Hz").to(frequency_units).m
+            positive = frequency > 0
+            frequency = frequency[positive]
+            if frequency.size == 0:
+                continue
+
+            color = colors[index % len(colors)]
+            magnitude = np.asarray(data["abs_fr"])[positive]
+            model_magnitude = np.asarray(data["model_magnitude"])[positive]
+            phase = np.asarray(data["phase_fr"])[positive]
+            model_phase = np.asarray(data["model_phase"])[positive]
+
+            for row, measured, predicted, quantity in (
+                (1, magnitude, model_magnitude, "Magnitude (m/A)"),
+                (2, phase, model_phase, "Phase (rad)"),
+            ):
+                fig.add_trace(
+                    go.Scatter(
+                        x=frequency,
+                        y=measured,
+                        mode="lines",
+                        name=f"Measured - {key}",
+                        legendgroup=key,
+                        legendgrouptitle=group_title,
+                        showlegend=row == 1,
+                        line=dict(color=color),
+                        hovertemplate=(
+                            f"Frequency ({frequency_units}): %{{x:.3g}}<br>"
+                            + f"{quantity}: %{{y:.3e}}<extra>Measured</extra>"
+                        ),
+                    ),
+                    row=row,
+                    col=1,
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=frequency,
+                        y=predicted,
+                        mode="lines",
+                        name=f"Model - {key}",
+                        legendgroup=key,
+                        showlegend=row == 1,
+                        line=dict(color=color, dash="dash"),
+                        hovertemplate=(
+                            f"Frequency ({frequency_units}): %{{x:.3g}}<br>"
+                            + f"{quantity}: %{{y:.3e}}<extra>Model</extra>"
+                        ),
+                    ),
+                    row=row,
+                    col=1,
+                )
+
+        fig.update_xaxes(type="log", row=1, col=1)
+        fig.update_xaxes(
+            type="log", title_text=f"Frequency ({frequency_units})", row=2, col=1
+        )
+        fig.update_yaxes(title_text="Magnitude (m/A)", row=1, col=1)
+        fig.update_yaxes(title_text="Phase (rad)", row=2, col=1)
+        fig.update_layout(title="Identification Frequency Data", **fig_kwargs)
+        return fig
+
+    # def plot_reduced_frequency_response(
+    #     self,
+    #     frequency_units="rad/s",
+    #     omega_min=0.01,
+    #     omega_max=10_000,
+    #     num_freqs=1000,
+    #     fig=None,
+    #     fig_kwargs=None,
+    # ):
+    #     """Plot the original and reduced frequency responses.
+    #
+    #     This method is intended for results created with ``method="reduce"``.
+    #     It compares the magnitude, in decibels, of the original and reduced
+    #     MIMO models over a logarithmically spaced angular-frequency range.
+    #
+    #     Parameters
+    #     ----------
+    #     frequency_units : str, optional
+    #         Frequency units. Default is "rad/s".
+    #     omega_min : float, optional
+    #         Minimum angular frequency in rad/s. Default is 0.01.
+    #     omega_max : float, optional
+    #         Maximum angular frequency in rad/s. Default is 10_000.
+    #     num_freqs : int, optional
+    #         Number of frequency points. Default is 1000.
+    #     fig : plotly.graph_objects.Figure, optional
+    #         Plotly figure to which the traces will be added. If None, a new
+    #         figure will be created.
+    #     fig_kwargs : dict, optional
+    #         Dictionary of keyword arguments to customize the Plotly figure.
+    #         Default is None.
+    #
+    #     Returns
+    #     -------
+    #     fig : plotly.graph_objects.Figure
+    #         Plotly figure containing the frequency responses.
+    #
+    #     Notes
+    #     -----
+    #     If the result was not generated with ``method="reduce"``, the method
+    #     returns ``None`` and emits a warning.
+    #
+    #     Examples
+    #     --------
+    #     >>> import ross as rs
+    #     >>> import control as ct
+    #     >>> rotor = rs.rotor_example()
+    #     >>> scipy_model = rotor._lti(speed=0)
+    #     >>> state_model = ct.ss(
+    #     ...     scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D
+    #     ... )
+    #     >>> model = ct.ss(
+    #     ...     state_model.A,
+    #     ...     state_model.B[:, :1],
+    #     ...     state_model.C[:1, :],
+    #     ...     state_model.D[:1, :1],
+    #     ... )
+    #     >>> result = rs.AmbSystemIdentificationResult(
+    #     ...     {"original_model": model, "reduced_model": model}, {}, "reduce"
+    #     ... )
+    #     >>> fig = result.plot_reduced_frequency_response(
+    #     ...     omega_max=100.0, num_freqs=20
+    #     ... )
+    #     >>> len(fig.data)
+    #     2
+    #     """
+    #     if self.method != "reduce":
+    #         warn(
+    #             "plot_reduced_frequency_response should only be used when the method is 'reduce'. "
+    #             "Use the other plotting methods (plot_model_response, plot_disturbances, or plot_ref_data)."
+    #         )
+    #         return None
+    #
+    #     response_data = self._compute_reduced_frequency_response(
+    #         frequency_units, omega_min, omega_max, num_freqs
+    #     )
+    #     num_rows, num_columns = response_data["reduced_mag"].shape[:2]
+    #     subplot_titles = self._get_frequency_response_labels(num_rows, num_columns)
+    #     fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
+    #     fig = self._create_frequency_response_figure(
+    #         num_rows, num_columns, subplot_titles, fig
+    #     )
+    #     self._add_frequency_response_traces(fig, response_data, frequency_units)
+    #     fig.update_layout(title="Frequency Response", **fig_kwargs)
+    #
+    #     return fig
+    #
+    # def _compute_reduced_frequency_response(
+    #     self, frequency_units, omega_min, omega_max, num_freqs
+    # ):
+    #     """Compute the original and reduced model frequency responses.
+    #
+    #     The responses are evaluated over a logarithmically spaced angular
+    #     frequency range. Magnitude data returned by ``python-control`` is
+    #     normalized to the ``[output, input, frequency]`` shape used by the
+    #     plotting methods, including for SISO models.
+    #
+    #     Parameters
+    #     ----------
+    #     frequency_units : str
+    #         Units used to convert the frequency axis.
+    #     omega_min : float
+    #         Minimum angular frequency in rad/s.
+    #     omega_max : float
+    #         Maximum angular frequency in rad/s.
+    #     num_freqs : int
+    #         Number of frequency points.
+    #
+    #     Returns
+    #     -------
+    #     response_data : dict
+    #         Dictionary containing the frequency-response data:
+    #
+    #         - ``"frequency"`` : ndarray
+    #             Frequency values converted to ``frequency_units``.
+    #         - ``"original_mag"`` : ndarray
+    #             Original model magnitudes with shape
+    #             ``[output, input, frequency]``.
+    #         - ``"reduced_mag"`` : ndarray
+    #             Reduced model magnitudes with shape
+    #             ``[output, input, frequency]``.
+    #
+    #     Examples
+    #     --------
+    #     >>> import control as ct
+    #     >>> import ross as rs
+    #     >>> rotor = rs.rotor_example()
+    #     >>> scipy_model = rotor._lti(speed=0)
+    #     >>> model = ct.ss(scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D)
+    #     >>> result = rs.AmbSystemIdentificationResult(
+    #     ...     models={"original_model": model, "reduced_model": model},
+    #     ...     fits={}, method="reduce",
+    #     ... )
+    #     >>> response_data = result._compute_reduced_frequency_response(
+    #     ...     "rad/s", 0.1, 10.0, 5
+    #     ... )
+    #     >>> sorted(response_data)
+    #     ['frequency', 'original_mag', 'reduced_mag']
+    #     >>> response_data["reduced_mag"].shape[-1]
+    #     5
+    #     """
+    #     omega = np.logspace(np.log10(omega_min), np.log10(omega_max), num_freqs)
+    #     frequency = Q_(omega, "rad/s").to(frequency_units).m
+    #
+    #     original_mag, _, _ = ct.frequency_response(self.models["original_model"], omega)
+    #     reduced_mag, _, _ = ct.frequency_response(self.models["reduced_model"], omega)
+    #
+    #     # python-control squeezes SISO responses to [frequency]. Keep the
+    #     # common [output, input, frequency] representation used by the plot.
+    #     if original_mag.ndim == 1:
+    #         original_mag = original_mag[None, None, :]
+    #     if reduced_mag.ndim == 1:
+    #         reduced_mag = reduced_mag[None, None, :]
+    #
+    #     return {
+    #         "frequency": frequency,
+    #         "original_mag": original_mag,
+    #         "reduced_mag": reduced_mag,
+    #     }
+    #
+    # def _get_frequency_response_labels(self, num_rows, num_columns):
+    #     """Build subplot titles for the reduced frequency response.
+    #
+    #     Channel names supplied to the result are used when they describe a
+    #     square MIMO model. Otherwise, generic current and displacement names
+    #     are generated from the number of inputs and outputs.
+    #
+    #     Parameters
+    #     ----------
+    #     num_rows : int
+    #         Number of subplot rows, corresponding to model inputs.
+    #     num_columns : int
+    #         Number of subplot columns, corresponding to model outputs.
+    #
+    #     Returns
+    #     -------
+    #     subplot_titles : list of str
+    #         Titles for the subplots in row-major order.
+    #
+    #     Examples
+    #     --------
+    #     >>> import ross as rs
+    #     >>> result = rs.AmbSystemIdentificationResult(
+    #     ...     models={}, fits={}, method="reduce",
+    #     ...     channel_names=["Current X", "Current Y"],
+    #     ... )
+    #     >>> result._get_frequency_response_labels(2, 2)
+    #     ['Current X →<br>Displacement X', 'Current X →<br>Displacement Y', 'Current Y →<br>Displacement X', 'Current Y →<br>Displacement Y']
+    #     """
+    #     if (
+    #         self.channel_names is not None
+    #         and len(self.channel_names) == num_rows
+    #         and num_rows == num_columns
+    #     ):
+    #         input_names = self.channel_names
+    #         output_names = [
+    #             name.replace("Current ", "Displacement ") for name in self.channel_names
+    #         ]
+    #     else:
+    #         input_names = [f"Current {index + 1}" for index in range(num_columns)]
+    #         output_names = [f"Displacement {index + 1}" for index in range(num_rows)]
+    #
+    #     return [
+    #         f"{input_names[row]} →<br>{output_names[column]}"
+    #         for row in range(num_rows)
+    #         for column in range(num_columns)
+    #     ]
+    #
+    # @staticmethod
+    # def _create_frequency_response_figure(
+    #     num_rows, num_columns, subplot_titles, fig=None
+    # ):
+    #     """Create the subplot figure unless one was supplied by the caller.
+    #
+    #     Parameters
+    #     ----------
+    #     num_rows : int
+    #         Number of rows in the subplot grid.
+    #     num_columns : int
+    #         Number of columns in the subplot grid.
+    #     subplot_titles : list of str
+    #         Titles assigned to the subplots in row-major order.
+    #     fig : plotly.graph_objects.Figure, optional
+    #         Existing figure to reuse. If provided, it is returned unchanged.
+    #
+    #     Returns
+    #     -------
+    #     fig : plotly.graph_objects.Figure
+    #         The supplied figure or a newly created subplot figure.
+    #
+    #     Examples
+    #     --------
+    #     >>> import ross as rs
+    #     >>> result = rs.AmbSystemIdentificationResult(
+    #     ...     models={}, fits={}, method="reduce",
+    #     ... )
+    #     >>> titles = ["Input 1 →<br>Output 1", "Input 1 →<br>Output 2"]
+    #     >>> fig = result._create_frequency_response_figure(1, 2, titles)
+    #     >>> len(fig.data)
+    #     0
+    #     >>> len(fig.layout.annotations)
+    #     2
+    #     """
+    #     if fig is not None:
+    #         return fig
+    #
+    #     return make_subplots(
+    #         rows=num_rows,
+    #         cols=num_columns,
+    #         shared_xaxes=True,
+    #         subplot_titles=subplot_titles,
+    #     )
+    #
+    # @staticmethod
+    # def _add_frequency_response_traces(fig, response_data, frequency_units):
+    #     """Add original and reduced response traces to a subplot figure.
+    #
+    #     Magnitudes are converted to decibels before being plotted. Two traces
+    #     are added for each input-output pair: one for the reduced model and
+    #     one for the original model. The first pair displays the legend entries
+    #     for both trace groups. The figure is modified in place.
+    #
+    #     Parameters
+    #     ----------
+    #     fig : plotly.graph_objects.Figure
+    #         Figure to which the traces and axis configurations are added.
+    #     response_data : dict
+    #         Frequency-response data returned by
+    #         ``_compute_reduced_frequency_response``.
+    #     frequency_units : str
+    #         Units displayed on the frequency axis.
+    #
+    #     Returns
+    #     -------
+    #     None
+    #         The figure is modified in place.
+    #
+    #     Examples
+    #     --------
+    #     >>> import numpy as np
+    #     >>> import ross as rs
+    #     >>> result = rs.AmbSystemIdentificationResult(
+    #     ...     models={}, fits={}, method="reduce",
+    #     ... )
+    #     >>> frequency = np.logspace(-1, 1, 5)
+    #     >>> response_data = {
+    #     ...     "frequency": frequency,
+    #     ...     "original_mag": np.ones((2, 2, 5)),
+    #     ...     "reduced_mag": np.ones((2, 2, 5)),
+    #     ... }
+    #     >>> fig = result._create_frequency_response_figure(
+    #     ...     2, 2, ["Input 1", "Input 2", "Input 3", "Input 4"]
+    #     ... )
+    #     >>> result._add_frequency_response_traces(fig, response_data, "rad/s")
+    #     >>> len(fig.data)
+    #     8
+    #     """
+    #     frequency = response_data["frequency"]
+    #     original_mag = response_data["original_mag"]
+    #     reduced_mag = response_data["reduced_mag"]
+    #     num_rows, num_columns = reduced_mag.shape[:2]
+    #
+    #     for row in range(num_rows):
+    #         for column in range(num_columns):
+    #             # python-control stores MIMO responses as
+    #             # [output, input, frequency]. Rows in this figure represent
+    #             # inputs and columns represent outputs, so the first two
+    #             # indices must be transposed here.
+    #             original_mag_ij = original_mag[column, row, :]
+    #             reduce_mag_ij = reduced_mag[column, row, :]
+    #
+    #             original_mag_db = 20 * np.log10(
+    #                 np.maximum(original_mag_ij, np.finfo(float).tiny)
+    #             )
+    #             reduce_mag_db = 20 * np.log10(
+    #                 np.maximum(reduce_mag_ij, np.finfo(float).tiny)
+    #             )
+    #
+    #             showlegend = row == 0 and column == 0
+    #             fig.add_trace(
+    #                 go.Scatter(
+    #                     x=frequency,
+    #                     y=reduce_mag_db,
+    #                     mode="lines",
+    #                     line=dict(color=tableau_colors["blue"]),
+    #                     name="Reduced",
+    #                     showlegend=showlegend,
+    #                     legendgroup="reduced",
+    #                     hovertemplate=(
+    #                         f"Frequency ({frequency_units}): %{{x:.2e}}<br>"
+    #                         + "Magnitude (dB): %{y:.2f}<extra>Reduced</extra>"
+    #                     ),
+    #                 ),
+    #                 row=row + 1,
+    #                 col=column + 1,
+    #             )
+    #             fig.add_trace(
+    #                 go.Scatter(
+    #                     x=frequency,
+    #                     y=original_mag_db,
+    #                     mode="lines",
+    #                     line=dict(color=tableau_colors["orange"], dash="dash"),
+    #                     name="Original",
+    #                     showlegend=showlegend,
+    #                     legendgroup="original",
+    #                     hovertemplate=(
+    #                         f"Frequency ({frequency_units}): %{{x:.2e}}<br>"
+    #                         + "Magnitude (dB): %{y:.2f}<extra>Original</extra>"
+    #                     ),
+    #                 ),
+    #                 row=row + 1,
+    #                 col=column + 1,
+    #             )
+    #
+    #             fig.update_xaxes(
+    #                 type="log",
+    #                 title_text=(
+    #                     f"Frequency ({frequency_units})"
+    #                     if row == num_rows - 1
+    #                     else None
+    #                 ),
+    #                 row=row + 1,
+    #                 col=column + 1,
+    #             )
+    #             fig.update_yaxes(
+    #                 title_text="Magnitude (dB)" if column == 0 else None,
+    #                 row=row + 1,
+    #                 col=column + 1,
+    #             )
+    #
+    # def plot_model_response(
+    #     self,
+    #     displacement_units="m",
+    #     time_units="s",
+    #     fig=None,
+    #     fig_kwargs=None,
+    # ):
+    #     """Plot model and reference responses.
+    #
+    #     The identified model output and the measured displacement are read
+    #     from ``time_data`` for each direction and plotted against
+    #     ``t_ident``.
+    #
+    #     Parameters
+    #     ----------
+    #     displacement_units : str, optional
+    #         Displacement units. Default is "m".
+    #     time_units : str, optional
+    #         Time units. Default is "s".
+    #     fig : plotly.graph_objects.Figure, optional
+    #         Plotly figure to which the traces will be added. If None, a new
+    #         figure will be created.
+    #     fig_kwargs : dict, optional
+    #         Dictionary of keyword arguments to customize the Plotly figure.
+    #         Default is None.
+    #
+    #     Returns
+    #     -------
+    #     fig : plotly.graph_objects.Figure
+    #         Plotly figure containing the model and reference responses.
+    #
+    #     Notes
+    #     -----
+    #     If ``method="reduce"``, the method returns ``None`` and emits a
+    #     warning because reduced models do not use time-domain simulation data.
+    #
+    #     Examples
+    #     --------
+    #     >>> import ross as rs
+    #     >>> import numpy as np
+    #     >>> import control as ct
+    #     >>> rotor = rs.rotor_example()
+    #     >>> scipy_model = rotor._lti(speed=0)
+    #     >>> state_model = ct.ss(
+    #     ...     scipy_model.A, scipy_model.B, scipy_model.C, scipy_model.D
+    #     ... )
+    #     >>> model = ct.ss(
+    #     ...     state_model.A,
+    #     ...     state_model.B[:, :1],
+    #     ...     state_model.C[:1, :],
+    #     ...     state_model.D[:1, :1],
+    #     ... )
+    #     >>> t = np.linspace(0.0, 1.0, 11)
+    #     >>> result = AmbSystemIdentificationResult(
+    #     ...     models={"test": model},
+    #     ...     fits={"test": 95.0},
+    #     ...     time_data={"test": {"t_ident": t, "d_ident": np.zeros(t.size),
+    #     ...                          "current_ident": np.zeros(t.size),
+    #     ...                          "disp_ident": np.zeros(t.size),
+    #     ...                          "model_output_ident": np.zeros(t.size)}},
+    #     ...     method="de",
+    #     ... )
+    #     >>> fig = result.plot_model_response()
+    #     >>> len(fig.data)
+    #     2
+    #     """
+    #     if self.method == "reduce":
+    #         warn(
+    #             "The 'reduce' method produces the system model directly without "
+    #             "using simulation data. Use plot_reduced_response()."
+    #         )
+    #         return None
+    #
+    #     fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
+    #     fig = go.Figure() if fig is None else fig
+    #     colors = list(tableau_colors.values())
+    #
+    #     for index, key in enumerate(self.models):
+    #         data = self.time_data[key]
+    #         time_seconds = data["t_ident"]
+    #         displacement_reference = data["disp_ident"]
+    #         time = Q_(time_seconds, "s").to(time_units).m
+    #         y_real = Q_(displacement_reference, "m").to(displacement_units).m
+    #         y_sim = data["model_output_ident"]
+    #
+    #         if y_sim is not None:
+    #             color = colors[index % len(colors)]
+    #             rgb = tuple(int(color[i : i + 2], 16) for i in (1, 3, 5))
+    #             dark_color = "#" + "".join(
+    #                 f"{int(channel * 0.8):02x}" for channel in rgb
+    #             )
+    #             y_sim = Q_(y_sim, "m").to(displacement_units).m
+    #
+    #             fig.add_trace(
+    #                 go.Scatter(
+    #                     x=time,
+    #                     y=y_sim,
+    #                     mode="lines",
+    #                     line=dict(color=color),
+    #                     name=f"Model - {key}",
+    #                     legendgroup=key,
+    #                     legendgrouptitle=dict(
+    #                         text=(
+    #                             f"Fitness: {self.fit['time'][key]:.2f}%"
+    #                             if self.fit is not None
+    #                             else f"Fitness: {self.fits[key]:.2f}%"
+    #                         )
+    #                     ),
+    #                     hovertemplate=(
+    #                         f"Time ({time_units}): %{{x:.2f}}<br>"
+    #                         + f"Model displacement ({displacement_units}): "
+    #                         + "%{y:.2e}<extra></extra>"
+    #                     ),
+    #                 )
+    #             )
+    #             fig.add_trace(
+    #                 go.Scatter(
+    #                     x=time,
+    #                     y=y_real,
+    #                     mode="lines",
+    #                     line=dict(color=dark_color, dash="dash"),
+    #                     name=f"Reference - {key}",
+    #                     legendgroup=key,
+    #                     hovertemplate=(
+    #                         f"Time ({time_units}): %{{x:.2f}}<br>"
+    #                         + f"Reference displacement ({displacement_units}): "
+    #                         + "%{y:.2e}<extra></extra>"
+    #                     ),
+    #                 )
+    #             )
+    #
+    #     fig.update_layout(
+    #         title="Model Response",
+    #         xaxis_title=f"Time ({time_units})",
+    #         yaxis_title=f"Displacement ({displacement_units})",
+    #         hovermode="x unified",
+    #         **fig_kwargs,
+    #     )
+    #
+    #     return fig
+    #
+    # def plot_disturbances(
+    #     self,
+    #     disturbance_units="m",
+    #     time_units="s",
+    #     fig=None,
+    #     fig_kwargs=None,
+    # ):
+    #     """Plot the disturbances used in the identification.
+    #
+    #     Identification disturbances are plotted against ``t_ident`` from the
+    #     corresponding ``time_data`` entry.
+    #
+    #     Parameters
+    #     ----------
+    #     disturbance_units : str, optional
+    #         Disturbance units. Default is "m".
+    #     time_units : str, optional
+    #         Time units. Default is "s".
+    #     fig : plotly.graph_objects.Figure, optional
+    #         Plotly figure to which traces will be added. If None, a new figure
+    #         will be created.
+    #     fig_kwargs : dict, optional
+    #         Dictionary of keyword arguments to customize the Plotly figure.
+    #         Default is None.
+    #
+    #     Returns
+    #     -------
+    #     fig : plotly.graph_objects.Figure
+    #         Plotly figure containing the disturbances.
+    #
+    #     Notes
+    #     -----
+    #     If ``method="reduce"``, the method returns ``None`` and emits a
+    #     warning because reduction results do not contain simulation
+    #     disturbances.
+    #
+    #     Examples
+    #     --------
+    #     >>> import numpy as np
+    #     >>> t = np.linspace(0.0, 1.0, 11)
+    #     >>> result = AmbSystemIdentificationResult(
+    #     ...     models={},
+    #     ...     fits={"test": 95.0},
+    #     ...     time_data={"test": {"t_ident": t, "d_ident": np.sin(t),
+    #     ...                          "current_ident": np.zeros(t.size),
+    #     ...                          "disp_ident": np.zeros(t.size),
+    #     ...                          "model_output_ident": np.zeros(t.size)}},
+    #     ...     method="de",
+    #     ... )
+    #     >>> fig = result.plot_disturbances()
+    #     >>> len(fig.data)
+    #     1
+    #     """
+    #     if self.method == "reduce":
+    #         warn(
+    #             "The 'reduce' method produces the system model directly without "
+    #             "using simulation data. Use plot_reduced_response()."
+    #         )
+    #         return None
+    #
+    #     if fig is None:
+    #         fig = go.Figure()
+    #
+    #     fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
+    #
+    #     for key, data in self.time_data.items():
+    #         time = Q_(data["t_ident"], "s").to(time_units).m
+    #         disturbance_values = Q_(data["d_ident"], "m").to(disturbance_units).m
+    #         fig.add_trace(
+    #             go.Scatter(
+    #                 x=time,
+    #                 y=disturbance_values,
+    #                 mode="lines",
+    #                 name=key,
+    #                 hovertemplate=(
+    #                     f"Time ({time_units}): %{{x:.2f}}<br>"
+    #                     + f"Disturbance amplitude ({disturbance_units}): "
+    #                     + "%{y:.2e}<extra></extra>"
+    #                 ),
+    #             )
+    #         )
+    #
+    #     fig.update_layout(
+    #         title="Disturbances",
+    #         xaxis_title=f"Time ({time_units})",
+    #         yaxis_title=f"Disturbance amplitude ({disturbance_units})",
+    #         hovermode="x unified",
+    #         **fig_kwargs,
+    #     )
+    #
+    #     return fig
+    #
+    # def plot_ref_data(
+    #     self,
+    #     current_units="A",
+    #     displacement_units="m",
+    #     time_units="s",
+    #     fig=None,
+    #     fig_kwargs=None,
+    # ):
+    #     """Plot the reference data (current and displacement) for each set.
+    #
+    #     The current and displacement signals are shown in separate rows and
+    #     share the time axis.
+    #
+    #     Parameters
+    #     ----------
+    #     current_units : str, optional
+    #         Current units. Default is "A".
+    #     displacement_units : str, optional
+    #         Displacement units. Default is "m".
+    #     time_units : str, optional
+    #         Time units. Default is "s".
+    #     fig : plotly.graph_objects.Figure, optional
+    #         Plotly figure to which the traces will be added. If None, a new
+    #         figure will be created.
+    #     fig_kwargs : dict, optional
+    #         Dictionary of keyword arguments to customize the Plotly figure.
+    #         Default is None.
+    #
+    #     Returns
+    #     -------
+    #     fig : plotly.graph_objects.Figure
+    #         Plotly figure containing the reference data.
+    #
+    #     Notes
+    #     -----
+    #     If ``method="reduce"``, the method returns ``None`` and emits a
+    #     warning because reduction results do not contain time-domain reference
+    #     data.
+    #
+    #     Examples
+    #     --------
+    #     >>> import numpy as np
+    #     >>> t = np.linspace(0.0, 1.0, 11)
+    #     >>> result = AmbSystemIdentificationResult(
+    #     ...     models={},
+    #     ...     fits={"test": 95.0},
+    #     ...     time_data={"test": {"t_ident": t, "d_ident": np.zeros(t.size),
+    #     ...                          "current_ident": np.zeros(t.size),
+    #     ...                          "disp_ident": np.zeros(t.size),
+    #     ...                          "model_output_ident": np.zeros(t.size)}},
+    #     ...     method="de",
+    #     ... )
+    #     >>> fig = result.plot_ref_data()
+    #     >>> len(fig.data)
+    #     2
+    #     """
+    #     if self.method == "reduce":
+    #         warn(
+    #             "The 'reduce' method produces the system model directly without "
+    #             "using simulation data. Use plot_reduced_response()."
+    #         )
+    #         return None
+    #
+    #     fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
+    #     fig = make_subplots(rows=2, cols=1, shared_xaxes=True) if fig is None else fig
+    #     colors = list(tableau_colors.values())
+    #
+    #     for color_index, (key, data) in enumerate(self.time_data.items()):
+    #         time = Q_(data["t_ident"], "s").to(time_units).m
+    #         current = Q_(data["current_ident"], "A").to(current_units).m
+    #         displacement = Q_(data["disp_ident"], "m").to(displacement_units).m
+    #         color = colors[color_index % len(colors)]
+    #
+    #         fig.add_trace(
+    #             go.Scatter(
+    #                 x=time,
+    #                 y=current,
+    #                 mode="lines",
+    #                 line=dict(color=color),
+    #                 name=key,
+    #                 legendgroup=key,
+    #                 hovertemplate=(
+    #                     f"Time ({time_units}): %{{x:.2f}}<br>"
+    #                     + f"Current ({current_units}): %{{y:.2e}}<extra></extra>"
+    #                 ),
+    #             ),
+    #             row=1,
+    #             col=1,
+    #         )
+    #         fig.add_trace(
+    #             go.Scatter(
+    #                 x=time,
+    #                 y=displacement,
+    #                 mode="lines",
+    #                 line=dict(color=color),
+    #                 name=key,
+    #                 legendgroup=key,
+    #                 showlegend=False,
+    #                 hovertemplate=(
+    #                     f"Time ({time_units}): %{{x:.2f}}<br>"
+    #                     + f"Displacement ({displacement_units}): %{{y:.2e}}<extra></extra>"
+    #                 ),
+    #             ),
+    #             row=2,
+    #             col=1,
+    #         )
+    #
+    #     fig.update_xaxes(title_text=f"Time ({time_units})", row=2, col=1)
+    #     fig.update_yaxes(title_text=f"Current ({current_units})", row=1, col=1)
+    #     fig.update_yaxes(
+    #         title_text=f"Displacement ({displacement_units})", row=2, col=1
+    #     )
+    #     fig.update_layout(title="Reference data", hovermode="x unified", **fig_kwargs)
+    #
+    #     return fig

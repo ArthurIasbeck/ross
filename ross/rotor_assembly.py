@@ -15,7 +15,7 @@ from ross import AmbSystemIdentificationResult
 from ross.bearings.magnetic import amb_system_identification
 from ross.bearings.magnetic.amb_system_identification import (
     SystemIdentification,
-    get_disturbance,
+    get_ident_disturbance,
     AmbSystemIdentification,
 )
 from scipy import io as sio
@@ -5558,11 +5558,12 @@ class Rotor(object):
         Returns
         -------
         results : ross.AmbSystemIdentificationResult
-            Result object containing ``models``, ``perturbances``,
-            ``ref_data``, ``fits``, and the selected ``method``.  For
-            data-driven methods, ``fits`` contains one fitness value in
-            percent for each identified model.  It is empty for
-            ``method="reduce"``.  The result also provides plotting methods
+            Result object containing ``models``, ``disturbances``,
+            ``ref_data``, ``fit``, and the selected ``method``. For
+            data-driven methods, ``fit`` contains ``time`` and ``freq`` maps
+            with one fitness value in percent for each identified model.
+            For ``method="reduce"``, frequency-response fitness is stored in
+            ``fits``. The result also provides plotting methods
             for model responses, disturbances, and reference data.
 
         Examples
