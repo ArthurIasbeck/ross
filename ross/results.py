@@ -8130,11 +8130,12 @@ class AmbSystemIdentificationResult(Results):
         model, these names are used to label current and displacement
         channels in the reduced frequency-response plot.
     fit : dict, optional
-        For data-driven identification, contains ``time`` and ``freq`` mappings
-        from direction keys to fitness percentages.
-    time_data, frequency_data : dict, optional
+        Contains ``time`` and ``freq`` mappings from direction keys to
+        fitness percentages for data-driven identification and model reduction.
+    time_data, frequency_data, frequency_response : dict, optional
         Time-domain and frequency-domain experiment arrays indexed by
-        identified direction. Each defaults to an empty dictionary.
+        identified direction. ``frequency_response`` contains FRFs for all
+        input/output axis pairs. Each defaults to an empty dictionary.
 
     Examples
     --------
@@ -8161,6 +8162,7 @@ class AmbSystemIdentificationResult(Results):
         fit=None,
         time_data=None,
         frequency_data=None,
+        frequency_response=None,
     ):
         """Initialize an active magnetic bearing identification result.
 
@@ -8180,11 +8182,12 @@ class AmbSystemIdentificationResult(Results):
         channel_names : list of str, optional
             Optional names for the input channels of a reduced MIMO model.
         fit : dict, optional
-            For data-driven identification, contains ``time`` and ``freq``
-            mappings from direction keys to fitness percentages.
-        time_data, frequency_data : dict, optional
+            Contains ``time`` and ``freq`` mappings from direction keys to
+            fitness percentages for data-driven identification and reduction.
+        time_data, frequency_data, frequency_response : dict, optional
             Time-domain and frequency-domain experiment arrays indexed by
-            identified direction. Each defaults to an empty dictionary.
+            identified direction. ``frequency_response`` contains FRFs for all
+            input/output axis pairs. Each defaults to an empty dictionary.
 
         Examples
         --------
@@ -8208,6 +8211,9 @@ class AmbSystemIdentificationResult(Results):
         self.channel_names = channel_names
         self.time_data = {} if time_data is None else time_data
         self.frequency_data = {} if frequency_data is None else frequency_data
+        self.frequency_response = (
+            {} if frequency_response is None else frequency_response
+        )
 
     def plot_time_data(
         self,
@@ -8465,6 +8471,99 @@ class AmbSystemIdentificationResult(Results):
         fig.update_yaxes(title_text="Magnitude (m/A)", row=1, col=1)
         fig.update_yaxes(title_text="Phase (rad)", row=2, col=1)
         fig.update_layout(title="Identification Frequency Data", **fig_kwargs)
+        return fig
+
+    def plot_frequency_response(
+        self,
+        input_key,
+        frequency_units="Hz",
+        fig=None,
+        fig_kwargs=None,
+    ):
+        """Plot all output frequency responses for one excited input axis.
+
+        The figure contains magnitude and phase subplots. The
+        frequency axis is logarithmic and shared by both subplots;
+        nonpositive frequencies, including the DC point, are omitted.
+
+        Parameters
+        ----------
+        input_key : str
+            Key identifying the excited input direction in
+            ``frequency_response``.
+        frequency_units : str, optional
+            Units for the frequency axis. Default is "Hz".
+        fig : plotly.graph_objects.Figure, optional
+            Three-row subplot figure to which the traces will be added. If
+            None, a new figure is created.
+        fig_kwargs : dict, optional
+            Additional Plotly layout options.
+
+        Returns
+        -------
+        fig : plotly.graph_objects.Figure or None
+            Figure containing all output frequency responses for the selected
+            input, or ``None`` when this result has no frequency responses.
+
+        Raises
+        ------
+        KeyError
+            If ``input_key`` is not present in ``frequency_response``.
+        """
+        if not self.frequency_response:
+            warn("No frequency-response data is available for this result.")
+            return None
+
+        outputs = self.frequency_response[input_key]["outputs"]
+        fig_kwargs = {} if fig_kwargs is None else copy.copy(fig_kwargs)
+        if fig is None:
+            fig = make_subplots(
+                rows=2,
+                cols=1,
+                shared_xaxes=True,
+                subplot_titles=("Magnitude", "Phase"),
+            )
+
+        colors = list(tableau_colors.values())
+        for index, (output_key, data) in enumerate(outputs.items()):
+            frequency = Q_(data["f"], "Hz").to(frequency_units).m
+            positive = frequency > 0
+            frequency = frequency[positive]
+            if frequency.size == 0:
+                continue
+
+            color = colors[index % len(colors)]
+            quantities = (
+                (1, np.asarray(data["abs_fr"])[positive], "Magnitude (m/A)"),
+                (2, np.asarray(data["phase_fr"])[positive], "Phase (rad)"),
+            )
+            for row, values, quantity in quantities:
+                fig.add_trace(
+                    go.Scatter(
+                        x=frequency,
+                        y=values,
+                        mode="lines",
+                        name=output_key,
+                        legendgroup=output_key,
+                        showlegend=row == 1,
+                        line=dict(color=color),
+                        hovertemplate=(
+                            f"Frequency ({frequency_units}): %{{x:.3g}}<br>"
+                            + f"{quantity}: %{{y:.3e}}<extra></extra>"
+                        ),
+                    ),
+                    row=row,
+                    col=1,
+                )
+
+        for row in (1, 2):
+            fig.update_xaxes(type="log", row=row, col=1)
+        fig.update_xaxes(
+            title_text=f"Frequency ({frequency_units})", row=2, col=1
+        )
+        fig.update_yaxes(title_text="Magnitude (m/A)", row=1, col=1)
+        fig.update_yaxes(title_text="Phase (rad)", row=2, col=1)
+        fig.update_layout(title=f"Frequency Response - {input_key}", **fig_kwargs)
         return fig
 
     # def plot_reduced_frequency_response(

@@ -5503,18 +5503,18 @@ class Rotor(object):
         passed to :class:`AmbSystemIdentification`.  The ``"de"`` method uses
         differential evolution, ``"slsqp"`` uses SLSQP optimization, and
         ``"ss"`` identifies a discrete state-space model.  The ``"reduce"``
-        method does not identify a model from simulated measurements; instead,
-        it builds the rotor model and reduces it using Hankel singular values.
+        method builds full and reduced rotor models using Hankel singular
+        values, then compares their closed-loop time and frequency responses.
 
         The returned result contains one model for each direction of every
         magnetic bearing.  Direction keys have the form
         ``"<bearing tag> (node <node>) - v"`` and
         ``"<bearing tag> (node <node>) - w"``.  For data-driven methods,
         corresponding fitness values, disturbance signals, and reference
-        data are also stored.  For ``"reduce"``, the disturbance and
-        reference-data entries are empty because no time-domain identification
-        data are generated, and ``fits`` is empty because no data-driven
-        fitness is calculated.
+        data are also stored. For ``"reduce"``, both models are simulated in
+        independent closed loops with the same MIMO sensor disturbance; the
+        reduced-model current and both model outputs are stored in
+        ``time_data``.
 
         Parameters
         ----------
@@ -5529,7 +5529,7 @@ class Rotor(object):
             simulation. Default is 10.
         dt : float, optional
             Time step, in seconds, used to generate the disturbance and to
-            simulate the rotor response.  Default is 1e-1.
+            simulate the response. Default is 1e-3.
         speed : float, optional
             Rotor speed, in rad/s, used by the time-response simulation.
             Default is 0.
@@ -5562,8 +5562,8 @@ class Rotor(object):
             ``ref_data``, ``fit``, and the selected ``method``. For
             data-driven methods, ``fit`` contains ``time`` and ``freq`` maps
             with one fitness value in percent for each identified model.
-            For ``method="reduce"``, frequency-response fitness is stored in
-            ``fits``. The result also provides plotting methods
+            For ``method="reduce"``, time and diagonal frequency fitness are
+            stored in ``fit`` and ``fits``. The result also provides plotting methods
             for model responses, disturbances, and reference data.
 
         Examples

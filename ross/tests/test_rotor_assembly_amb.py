@@ -545,7 +545,7 @@ def test_run_amb_sensitivity():
     )
 
 
-def test_run_amb_system_identification():
+def test_run_amb_system_identification(monkeypatch):
     rotor = rotor_example_amb_simple()
     from ross.bearings.magnetic.amb_utils import get_ambs
 
@@ -572,11 +572,13 @@ def test_run_amb_system_identification():
         assert set(result.models) == expected_keys
         assert set(result.time_data) == expected_keys
         assert set(result.frequency_data) == expected_keys
+        assert set(result.frequency_response) == expected_keys
 
         for key in expected_keys:
             model = result.models[key]
             data = result.time_data[key]
             fr_data = result.frequency_data[key]
+            input_response = result.frequency_response[key]
             assert set(data) == {
                 "t_ident",
                 "d_ident",
@@ -596,6 +598,18 @@ def test_run_amb_system_identification():
                 "model_magnitude",
                 "model_phase",
             }
+            assert set(input_response) == {
+                "outputs",
+            }
+            assert set(input_response["outputs"]) == expected_keys
+            for output_data in input_response["outputs"].values():
+                assert set(output_data) == {
+                    "f",
+                    "abs_fr",
+                    "phase_fr",
+                    "fr",
+                }
+                assert output_data["f"].size == output_data["fr"].size
             assert data["t_ident"].size == data["d_ident"].size
             assert data["t_ident"].size == data["model_output_ident"].size
             assert fr_data["t_fr"].size == fr_data["d_fr"].size
@@ -624,9 +638,59 @@ def test_run_amb_system_identification():
             assert data["t_ident"].size > 0
             assert np.all(np.diff(data["t_ident"]) >= 0)
 
-    reduce_result = rotor.run_amb_system_identification("reduce", num_modes=10)
-    assert reduce_result.time_data == {}
-    assert reduce_result.frequency_data == {}
+    forced_response_calls = []
+    original_forced_response = ct.forced_response
+
+    def track_forced_response(system, *args, **kwargs):
+        forced_response_calls.append((system, kwargs["T"], kwargs["U"]))
+        return original_forced_response(system, *args, **kwargs)
+
+    monkeypatch.setattr(ct, "forced_response", track_forced_response)
+    reduce_result = rotor.run_amb_system_identification(
+        "reduce",
+        num_modes=4,
+        num_freqs=5,
+        dt=0.01,
+        time_to_converge=None,
+        disturbance_changing_time=0.1,
+        disturbance_steady_time=0.1,
+        disturbance_n_steps=1,
+    )
+    assert len(forced_response_calls) == 2
+    assert_allclose(forced_response_calls[0][1], forced_response_calls[1][1])
+    assert_allclose(forced_response_calls[0][2], forced_response_calls[1][2])
+    assert set(reduce_result.time_data) == expected_keys
+    assert set(reduce_result.frequency_data) == expected_keys
+    assert set(reduce_result.fit["time"]) == expected_keys
+    assert set(reduce_result.fit["freq"]) == expected_keys
+    assert set(reduce_result.fits) == expected_keys
+    assert set(reduce_result.frequency_response) == expected_keys
+    assert all(
+        set(data["outputs"]) == expected_keys
+        for data in reduce_result.frequency_response.values()
+    )
+    assert len(reduce_result.fits) == len(expected_keys)
+    for key, data in reduce_result.time_data.items():
+        assert set(data) == {
+            "t_ident",
+            "d_ident",
+            "current_ident",
+            "disp_ident",
+            "model_output_ident",
+        }
+        assert all(np.isfinite(value).all() for value in data.values())
+        assert data["t_ident"].size == data["current_ident"].size
+        assert data["t_ident"].size == data["disp_ident"].size
+        assert data["t_ident"].size == data["model_output_ident"].size
+        expected_fit = AmbSystemIdentification._frequency_response_fitness(
+            data["disp_ident"], data["model_output_ident"]
+        )
+        assert_allclose(reduce_result.fit["time"][key], expected_fit)
+    time_figure = reduce_result.plot_time_data()
+    assert len(time_figure.data) == 4 * len(expected_keys)
+    assert all(
+        trace.name.startswith("Current - ") for trace in time_figure.data[1::4]
+    )
 
 
 def test_run_amb_system_identification_rejects_unknown_method():
@@ -697,7 +761,11 @@ def test_run_amb_system_identification_reduce_has_empty_domain_data(
     result = identification.run_amb_system_identification("reduce")
 
     assert result.time_data == {}
-    assert result.frequency_data == {}
+    assert result.fit == {"time": {}, "freq": {}}
+    assert set(forwarded["fit"]) == {"time", "freq"}
+    assert "time_data" in forwarded
+    assert set(forwarded["frequency_data"]) == set()
+    assert set(forwarded["frequency_response"]) == set()
 
 
 @pytest.mark.parametrize(
@@ -729,20 +797,26 @@ def test_amb_tf_identification_uses_p_per_direction(monkeypatch, p, expected_p):
         "ross.bearings.magnetic.amb_system_identification.get_ident_disturbance",
         lambda *args, **kwargs: (np.arange(2.0), np.ones(2)),
     )
-    monkeypatch.setattr(
-        "ross.bearings.magnetic.amb_system_identification.compute_freq_resp",
-        lambda *args: (
+    frf_inputs = []
+
+    def fake_compute_freq_resp(t, y, u):
+        frf_inputs.append((t.copy(), y.copy(), u.copy()))
+        return (
             np.array([10.0, 20.0]),
             np.array([1.0, 2.0]),
             np.array([0.1, 0.2]),
             np.array([1.0 + 0.0j, 2.0 + 0.0j]),
             None,
-        ),
+        )
+
+    monkeypatch.setattr(
+        "ross.bearings.magnetic.amb_system_identification.compute_freq_resp",
+        fake_compute_freq_resp,
     )
 
     class FakeResponse:
-        I = np.zeros((2, 4))
-        v_amb = np.zeros((2, 4))
+        I = np.tile(np.arange(1.0, 5.0), (2, 1))
+        v_amb = np.tile(10 * np.arange(1.0, 5.0), (2, 1))
 
     monkeypatch.setattr(
         rotor, "run_time_response", lambda *args, **kwargs: FakeResponse()
@@ -759,6 +833,23 @@ def test_amb_tf_identification_uses_p_per_direction(monkeypatch, p, expected_p):
     assert_equal(list(result.fit["time"].values()), [12.5] * len(result.models))
     assert set(result.time_data) == set(result.models)
     assert set(result.frequency_data) == set(result.models)
+    assert set(result.frequency_response) == set(result.models)
+    assert len(frf_inputs) == len(result.models) * len(result.models)
+    for input_index, input_data in enumerate(result.frequency_response.values()):
+        assert set(input_data["outputs"]) == set(result.models)
+        for output_index, output_data in enumerate(input_data["outputs"].values()):
+            assert set(output_data) == {
+                "f",
+                "abs_fr",
+                "phase_fr",
+                "fr",
+            }
+            frf_index = input_index * len(result.models) + output_index
+            t_passed, y_passed, u_passed = frf_inputs[frf_index]
+            assert t_passed.tolist() == [1.0]
+            assert y_passed.tolist() == [10.0 * (output_index + 1)]
+            assert u_passed.tolist() == [input_index + 1.0]
+            assert output_data["f"].tolist() == [10.0, 20.0]
     for data in result.frequency_data.values():
         assert set(data) == {
             "t_fr",
@@ -1025,6 +1116,66 @@ def test_amb_system_identification_plot_frequency_data():
     assert fig.layout.yaxis2.title.text == "Phase (rad)"
 
 
+def test_amb_system_identification_plot_frequency_response():
+    result = AmbSystemIdentificationResult(
+        models={},
+        fits={},
+        method="ss",
+        frequency_response={
+            "input": {
+                "outputs": {
+                    "output v": {
+                        "f": np.array([0.0, 1.0, 10.0]),
+                        "abs_fr": np.array([0.0, 2.0, 3.0]),
+                        "phase_fr": np.array([0.0, 0.2, 0.3]),
+                        "fr": np.array([0.0j, 2.0 + 0.1j, 3.0 + 0.2j]),
+                    },
+                    "output w": {
+                        "f": np.array([0.0, 1.0, 10.0]),
+                        "abs_fr": np.array([0.0, 4.0, 5.0]),
+                        "phase_fr": np.array([0.0, 0.4, 0.5]),
+                        "fr": np.array([0.0j, 4.0 + 0.1j, 5.0 + 0.2j]),
+                    },
+                }
+            }
+        },
+    )
+
+    fig = result.plot_frequency_response("input", frequency_units="kHz")
+
+    assert len(fig.data) == 4
+    assert_allclose(fig.data[0].x, [0.001, 0.01])
+    assert_allclose(fig.data[0].y, [2.0, 3.0])
+    assert_allclose(fig.data[1].y, [0.2, 0.3])
+    assert_allclose(fig.data[2].y, [4.0, 5.0])
+    assert_allclose(fig.data[3].y, [0.4, 0.5])
+    assert fig.layout.xaxis.type == "log"
+    assert fig.layout.xaxis.matches == "x2"
+    assert fig.layout.xaxis2.type == "log"
+    assert fig.layout.xaxis2.title.text == "Frequency (kHz)"
+    assert fig.layout.yaxis.title.text == "Magnitude (m/A)"
+    assert fig.layout.yaxis2.title.text == "Phase (rad)"
+
+
+def test_amb_system_identification_plot_frequency_response_missing_data():
+    result = AmbSystemIdentificationResult(models={}, fits={}, method="reduce")
+
+    with pytest.warns(UserWarning, match="No frequency-response data"):
+        assert result.plot_frequency_response("input") is None
+
+
+def test_amb_system_identification_plot_frequency_response_missing_input_key():
+    result = AmbSystemIdentificationResult(
+        models={},
+        fits={},
+        method="ss",
+        frequency_response={"available input": {"outputs": {}}},
+    )
+
+    with pytest.raises(KeyError, match="missing input"):
+        result.plot_frequency_response("missing input")
+
+
 def test_amb_system_identification_plot_frequency_data_unwraps_phase():
     measured_phase = np.array([0.0, 3.0, 3.1, -3.1, -3.0, -2.9])
     model_phase = np.array([0.0, 2.9, 3.0, -3.0, -2.9, -2.8])
@@ -1095,6 +1246,8 @@ def test_amb_system_identification_plot_omits_missing_fitness():
 
 def test_amb_system_identification_plot_methods_warn_without_data():
     result = AmbSystemIdentificationResult(models={}, fits={}, method="reduce")
+
+    assert result.frequency_response == {}
 
     with pytest.warns(UserWarning, match="No time-domain data"):
         assert result.plot_time_data() is None

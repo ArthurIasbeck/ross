@@ -2,6 +2,7 @@ from copy import deepcopy
 
 import numpy as np
 import control as ct
+from scipy.linalg import block_diag
 from scipy.signal import chirp
 
 from ross.bearings.magnetic.amb_utils import get_ambs
@@ -78,19 +79,20 @@ class AmbSystemIdentification:
         resulting current and displacement signals.  ``"de"`` uses
         differential evolution, ``"slsqp"`` uses SLSQP optimization, and
         ``"ss"`` identifies a discrete state-space model through
-        :class:`SystemIdentification`.  The ``"reduce"`` method builds a
-        model directly from the rotor and reduces it using Hankel singular
-        values instead of using simulated measurements.
+        :class:`SystemIdentification`. The ``"reduce"`` method builds full
+        and reduced models using Hankel singular values and compares their
+        closed-loop time and frequency responses.
 
         The returned result contains one model for each direction of every
         magnetic bearing.  Direction keys have the form
         ``"<bearing tag> (node <node>) - v"`` and
         ``"<bearing tag> (node <node>) - w"``.  For data-driven methods,
         corresponding fitness values, disturbance signals, and reference
-        data are also stored.  For ``"reduce"``, the disturbance and
-        reference-data entries are empty because no time-domain identification
-        data are generated, while ``fits`` contains one frequency-response
-        fitness for each input/output channel pair.
+        data are also stored. For ``"reduce"``, both models are simulated in
+        separate closed loops using the same MIMO sensor disturbance. The
+        reduced-model current and both model outputs are stored in
+        ``time_data``; diagonal frequency fitnesses are stored in ``fit`` and
+        ``fits``.
 
         Parameters
         ----------
@@ -105,7 +107,7 @@ class AmbSystemIdentification:
             simulation. Default is 10.
         dt : float, optional
             Time step, in seconds, used to generate the disturbance and to
-            simulate the rotor response.  Default is 1e-1.
+            simulate the response. Default is 1e-3.
         speed : float, optional
             Rotor speed, in rad/s, used by the time-response simulation and
             by the model-reduction workflow. Default is 0.
@@ -149,14 +151,11 @@ class AmbSystemIdentification:
             Result object containing ``models``, ``time_data``,
             ``frequency_data``, ``fit``, and the selected ``method``. The
             domain data contain the simulated signals and measured/model
-            responses. For
-            data-driven methods, ``fit`` contains ``time`` and ``freq`` maps
-            with one fitness value in percent for each identified model.
-            ``fits`` contains the frequency-response fitness values for
-            ``method="reduce"``. The result also provides plotting methods
-            for model responses, disturbances, and reference data.
-            ``time_data`` and ``frequency_data`` are empty for
-            ``method="reduce"``.
+            responses. ``fit`` contains ``time`` and ``freq`` maps with
+            fitness values for data-driven methods and the reduction
+            comparison. ``fits`` contains frequency-response fitness values
+            for ``method="reduce"``. The result also provides plotting
+            methods for model responses, disturbances, and reference data.
 
         Examples
         --------
@@ -199,6 +198,7 @@ class AmbSystemIdentification:
         fit = {"time": {}, "freq": {}}
         time_data = {}
         frequency_data = {}
+        frequency_response = {}
         channel_names = None
 
         if method in ["de", "slsqp", "ss"]:
@@ -209,6 +209,7 @@ class AmbSystemIdentification:
                 "time_data": time_data,
                 "fit": fit,
                 "frequency_data": frequency_data,
+                "frequency_response": frequency_response,
             }
             self._run_amb_tf_data_driven_identification(**data_driven_kwargs)
 
@@ -217,8 +218,13 @@ class AmbSystemIdentification:
                 **kwargs,
                 "models": models,
                 "fits": fits,
+                "fit": fit,
+                "time_data": time_data,
+                "frequency_data": frequency_data,
+                "frequency_response": frequency_response,
             }
             self._run_amb_tf_reduction_identification(**reduction_kwargs)
+            fits.update(fit["freq"])
 
             ambs = get_ambs(self.rotor)
             channel_names = [
@@ -230,25 +236,23 @@ class AmbSystemIdentification:
         return AmbSystemIdentificationResult(
             models=models,
             fits=fits,
-            fit=fit if method in {"de", "slsqp", "ss"} else None,
+            fit=fit if method in {"de", "slsqp", "ss", "reduce"} else None,
             method=method,
             channel_names=channel_names,
             time_data=time_data,
             frequency_data=frequency_data,
+            frequency_response=frequency_response,
         )
 
     def _run_amb_tf_reduction_identification(self, **kwargs):
         """Build and reduce one model for each magnetic-bearing direction.
 
-        For every magnetic bearing in ``self.rotor``, this method creates a
-        :class:`ReduceModel`, plots its Hankel singular values, and reduces the
-        two orthogonal SISO models to the requested number of modes.  The resulting
-        transfer functions are stored in ``models`` under ``- v`` and ``- w``
-        keys.  Since this method performs model reduction rather than a
-        time-domain experiment, it inserts empty disturbance arrays and empty
-        reference-data arrays for each model.  The fitness of each input/output
-        frequency response is calculated and stored in ``fits`` using the
-        response labels shown by the result's frequency-response plot.
+        This method builds full and reduced MIMO models, compares their
+        frequency responses, and simulates each model in its own closed loop
+        under the same generated sensor disturbances. The reduced model's
+        control currents and both models' displacement outputs are stored in
+        ``time_data``. Frequency responses, time and frequency fitness values,
+        and models are stored in their corresponding dictionaries.
 
         This is an internal helper called by
         :meth:`run_amb_system_identification` when ``method="reduce"``.  The
@@ -258,18 +262,34 @@ class AmbSystemIdentification:
         Parameters
         ----------
         num_modes : int, optional
-            Number of modes retained in each reduced transfer-function model.
-            Default is 10.
+            Number of modes retained in the reduced model. Default is 10.
         speed : float, optional
             Rotor speed, in rad/s, used to build the original and reduced
             models. Default is 0.
+        dt : float, optional
+            Sampling interval, in seconds, used for the disturbance and
+            time-response simulation. Default is 1e-3.
+        time_to_converge : float or None, optional
+            Samples before this time are discarded. Use ``None`` to keep all
+            samples. Default is 1.0.
+        disturbance_changing_time, disturbance_steady_time : float, optional
+            Transition and nominal steady durations of generated disturbance
+            steps. Defaults are 0.5 and 5 seconds, respectively.
+        disturbance_n_steps : int, optional
+            Number of disturbance steps. Default is 60.
+        disturbance_step_amplitude : float, optional
+            Amplitude scale of disturbance steps. Default is ``10e-6``.
         models : dict
-            Dictionary to receive the reduced models. It is updated in place
-            with the ``G_v`` and ``G_w`` models for every magnetic bearing.
-        fits : dict
-            Dictionary to receive one fitness value, in percent, for each
-            input/output frequency response. It is updated in place using the
-            frequency-response labels.
+            Dictionary to receive the full and reduced MIMO models.
+        time_data : dict
+            Dictionary to receive time-domain disturbance, current, and
+            displacement signals indexed by magnetic-bearing direction.
+        fit : dict
+            Dictionary with ``time`` and ``freq`` fitness maps, updated in
+            place by direction.
+        frequency_data, frequency_response : dict
+            Dictionaries to receive diagonal model comparisons and all
+            original-model input/output frequency responses.
 
         Returns
         -------
@@ -285,24 +305,41 @@ class AmbSystemIdentification:
         ... )
         >>> rotor = rotor_example_amb_simple()
         >>> identification = AmbSystemIdentification(rotor)
-        >>> models = {}
+        >>> models, time_data, frequency_data = {}, {}, {}
+        >>> frequency_response = {}
+        >>> fit = {"time": {}, "freq": {}}
         >>> identification._run_amb_tf_reduction_identification(
         ...     num_modes=10,
         ...     speed=600.0,
         ...     models=models,
+        ...     time_data=time_data,
+        ...     fit=fit,
+        ...     frequency_data=frequency_data,
+        ...     frequency_response=frequency_response,
         ... )
         >>> len(models) == 2
         True
         """
-        num_modes = kwargs.get("num_modes", 10)
-        speed = kwargs.get("speed", 0)
         omega_min = kwargs.get("omega_min", 0.01)
         omega_max = kwargs.get("omega_max", 10_000)
         num_freqs = kwargs.get("num_freqs", 1_000)
-
+        speed = kwargs.get("speed", 0)
+        num_modes = kwargs.get("num_modes", 10)
+        dt = kwargs.get("dt", 1e-3)
+        time_to_converge = kwargs.get("time_to_converge", 1.0)
+        disturbance_changing_time = kwargs.get("disturbance_changing_time", 0.5)
+        disturbance_steady_time = kwargs.get("disturbance_steady_time", 5)
+        disturbance_n_steps = kwargs.get("disturbance_n_steps", 60)
+        disturbance_step_amplitude = kwargs.get(
+            "disturbance_step_amplitude", 10e-6
+        )
         models = kwargs["models"]
-        fits = kwargs["fits"]
+        time_data = kwargs["time_data"]
+        fit = kwargs["fit"]
+        frequency_data = kwargs["frequency_data"]
+        frequency_response = kwargs["frequency_response"]
 
+        # Build the full-order and reduced rotor models for comparison.
         original_model_builder = ReduceModel(
             rotor=deepcopy(self.rotor), speed=speed, num_modes=-1
         )
@@ -313,39 +350,166 @@ class AmbSystemIdentification:
         original_model = original_model_builder.build_model()
         reduced_model = reduced_model_builder.build_model()
 
+        # Evaluate both models over the requested logarithmic frequency range.
         omega = np.logspace(np.log10(omega_min), np.log10(omega_max), num_freqs)
         original_mag, original_phase, _ = ct.frequency_response(original_model, omega)
         reduced_mag, reduced_phase, _ = ct.frequency_response(reduced_model, omega)
 
-        freq_resp_original = original_mag * np.exp(1j * original_phase)
-        freq_resp_reduced = reduced_mag * np.exp(1j * reduced_phase)
-
-        # TODO: É muito estranho eu repetir essa lógica aqui. Não faz sentido. Depois vou precisar pensar em uma forma melhor de fazer isso
-        from ross import AmbSystemIdentificationResult
+        # Reconstruct complex FRFs and normalize the SISO shape to MIMO axes.
+        original_fr = np.squeeze(original_mag * np.exp(1j * original_phase))
+        reduced_fr = np.squeeze(reduced_mag * np.exp(1j * reduced_phase))
+        if original_fr.ndim == 1:
+            original_fr = original_fr[None, None, :]
+            reduced_fr = reduced_fr[None, None, :]
 
         ambs = get_ambs(self.rotor)
-        channel_names = [
-            f"{amb.tag} - {axis}" for amb in ambs for axis in ("Current v", "Current w")
-        ]
-        label_result = AmbSystemIdentificationResult(
-            models={}, fits={}, method="reduce", channel_names=channel_names
-        )
-        num_rows, num_columns = freq_resp_original.shape[:2]
-        labels = label_result._get_frequency_response_labels(num_rows, num_columns)
+        channel_keys = [self._amb_axis_key(ambs, i) for i in range(2 * len(ambs))]
+        frequency_hz = omega / (2 * np.pi)
 
-        for row in range(num_rows):
-            for column in range(num_columns):
-                original_response = freq_resp_original[row, column, :]
-                reduced_response = freq_resp_reduced[row, column, :]
-                fits[labels[row * num_columns + column]] = 100 * (
-                    1
-                    - np.linalg.norm(original_response - reduced_response)
-                    / np.linalg.norm(original_response - np.mean(original_response))
-                )
+        # Group every original-model response by input, including all outputs.
+        for input_index, input_key in enumerate(channel_keys):
+            output_responses = {}
+            for output_index, output_key in enumerate(channel_keys):
+                magnitude = np.asarray(original_mag)[output_index, input_index, :]
+                phase = np.asarray(original_phase)[output_index, input_index, :]
+                response = original_fr[output_index, input_index, :]
+                output_responses[output_key] = {
+                    "f": frequency_hz,
+                    "abs_fr": magnitude,
+                    "phase_fr": phase,
+                    "fr": response,
+                }
 
+                # Compare only aligned input/output channels for the summary plot.
+                if output_index == input_index:
+                    reduced_magnitude = np.asarray(reduced_mag)[
+                        output_index, input_index, :
+                    ]
+                    reduced_phase_response = np.asarray(reduced_phase)[
+                        output_index, input_index, :
+                    ]
+                    reduced_response = reduced_fr[output_index, input_index, :]
+                    fit_freq = self._frequency_response_fitness(
+                        response, reduced_response
+                    )
+
+                    # Match the data-driven frequency plot's measured/model fields.
+                    fit["freq"][input_key] = fit_freq
+                    frequency_data[input_key] = {
+                        "f": frequency_hz,
+                        "abs_fr": magnitude,
+                        "phase_fr": phase,
+                        "fr": response,
+                        "model_magnitude": reduced_magnitude,
+                        "model_phase": reduced_phase_response,
+                    }
+
+            frequency_response[input_key] = {"outputs": output_responses}
+
+        # Keep both models available on the returned identification result.
         models["reduced_model"] = reduced_model
         models["original_model"] = original_model
 
+        # Generate an independent sensor disturbance for each MIMO direction.
+        disturbances = [
+            get_ident_disturbance(
+                dt,
+                changing_time=disturbance_changing_time,
+                steady_time=disturbance_steady_time,
+                n_steps=disturbance_n_steps,
+                step_amplitude=disturbance_step_amplitude,
+            )
+            for _ in channel_keys
+        ]
+        num_samples = min(len(disturbance) for _, disturbance in disturbances)
+        t_ident = disturbances[0][0][:num_samples]
+        d_ident = np.column_stack(
+            [disturbance[:num_samples] for _, disturbance in disturbances]
+        )
+
+        # Use each bearing controller on the corresponding pair of axes.
+        ambs = get_ambs(self.rotor)
+        controllers = [
+            ct.ss(amb.get_analog_controller()) for amb in ambs for _ in (0, 1)
+        ]
+        controller = ct.append(*controllers)
+
+        # Simulate each plant in its own feedback loop with the same disturbance.
+        full_output = self._closed_loop_outputs(original_model, controller)
+        reduced_output = self._closed_loop_outputs(reduced_model, controller)
+
+        full_response = ct.forced_response(
+            full_output, T=t_ident, U=d_ident.T, return_states=False
+        ).outputs
+
+        reduced_response = ct.forced_response(
+            reduced_output, T=t_ident, U=d_ident.T, return_states=False
+        ).outputs
+
+        n_axes = len(channel_keys)
+        measured_displacements = np.asarray(full_response)[:n_axes, :].T
+        reduced_displacements = np.asarray(reduced_response)[:n_axes, :].T
+        reduced_currents = np.asarray(reduced_response)[n_axes:, :].T
+
+        # Discard the initial transient when requested and save aligned channels.
+        keep = (
+            np.ones(t_ident.size, dtype=bool)
+            if time_to_converge is None
+            else t_ident >= time_to_converge
+        )
+        t_ident = t_ident[keep]
+        d_ident = d_ident[keep, :]
+        measured_displacements = measured_displacements[keep, :]
+        reduced_displacements = reduced_displacements[keep, :]
+        reduced_currents = reduced_currents[keep, :]
+
+        for index, key in enumerate(channel_keys):
+            measured = measured_displacements[:, index]
+            predicted = reduced_displacements[:, index]
+            fit["time"][key] = self._frequency_response_fitness(measured, predicted)
+            time_data[key] = {
+                "t_ident": t_ident,
+                "d_ident": d_ident[:, index],
+                "current_ident": reduced_currents[:, index],
+                "disp_ident": measured,
+                "model_output_ident": predicted,
+            }
+
+    @staticmethod
+    def _closed_loop_outputs(plant, controller):
+        """Build a closed-loop system with displacement and current outputs."""
+        # Plant inputs are physical X/Y currents while its outputs and the
+        # controllers use the bearing's rotated v/w coordinates.
+        theta = np.pi / 4
+        rotation = np.array(
+            [
+                [np.cos(theta), np.sin(theta)],
+                [-np.sin(theta), np.cos(theta)],
+            ]
+        )
+        input_rotation = block_diag(
+            *[rotation for _ in range(plant.ninputs // 2)]
+        )
+        plant = ct.ss(
+            plant.A,
+            plant.B @ input_rotation.T,
+            plant.C,
+            plant.D @ input_rotation.T,
+            plant.dt,
+        )
+
+        displacement_response = ct.feedback(plant, controller)
+        current_response = ct.feedback(controller, plant)
+
+        # A positive disturbance at the sensor is equivalent to a negative
+        # reference input for the standard negative-feedback interconnection.
+        A = block_diag(displacement_response.A, current_response.A)
+        B = -np.vstack((displacement_response.B, current_response.B))
+        C = block_diag(displacement_response.C, current_response.C)
+        D = -np.vstack((displacement_response.D, current_response.D))
+        return ct.ss(A, B, C, D)
+
+    # TODO: Reduzir a complexidade cognitiva desse método
     def _run_amb_tf_data_driven_identification(self, method, **kwargs):
         """Identify magnetic-bearing models from simulated time-response data.
 
@@ -391,6 +555,9 @@ class AmbSystemIdentification:
         frequency_data : dict
             Dictionary to populate with chirp signals and measured/model
             frequency responses, indexed by identified direction.
+        frequency_response : dict
+            Dictionary to populate with chirp responses for every input and
+            output axis pair, indexed first by excited input direction.
         disturbance_changing_time : float, optional
             Duration, in seconds, of each transition in the generated
             disturbance. Default is 0.5.
@@ -429,6 +596,7 @@ class AmbSystemIdentification:
         >>> rotor = rotor_example_amb_simple()
         >>> identification = AmbSystemIdentification(rotor)
         >>> models, time_data, frequency_data = {}, {}, {}
+        >>> frequency_response = {}
         >>> fit = {"time": {}, "freq": {}}
         >>> identification._run_amb_tf_data_driven_identification(
         ...     "ss",
@@ -440,6 +608,7 @@ class AmbSystemIdentification:
         ...     time_data=time_data,
         ...     fit=fit,
         ...     frequency_data=frequency_data,
+        ...     frequency_response=frequency_response,
         ...     disturbance_changing_time=0.5,
         ...     disturbance_steady_time=5,
         ...     disturbance_n_steps=60,
@@ -469,6 +638,7 @@ class AmbSystemIdentification:
         time_data = kwargs["time_data"]
         fit = kwargs["fit"]
         frequency_data = kwargs["frequency_data"]
+        frequency_response = kwargs.setdefault("frequency_response", {})
 
         ambs = get_ambs(self.rotor)
         n_ambs = len(ambs)
@@ -542,16 +712,36 @@ class AmbSystemIdentification:
             )
 
             current_fr = response_fr.I[:, i]
-            disp_fr = response_fr.v_amb[:, i]
+            displacements_fr = response_fr.v_amb
 
             # Trim the data.
             if time_to_converge is not None:
                 current_fr = current_fr[t_fr >= time_to_converge]
-                disp_fr = disp_fr[t_fr >= time_to_converge]
+                displacements_fr = displacements_fr[t_fr >= time_to_converge, :]
                 d_fr = d_fr[t_fr >= time_to_converge]
                 t_fr = t_fr[t_fr >= time_to_converge]
 
-            f, abs_fr, phase_fr, fr, _ = compute_freq_resp(t_fr, disp_fr, current_fr)
+            output_frequency_responses = {}
+            for output_index in range(n_axes):
+                output_key = self._amb_axis_key(ambs, output_index)
+                disp_fr_output = displacements_fr[:, output_index]
+                f_output, abs_output, phase_output, fr_output, _ = compute_freq_resp(
+                    t_fr, disp_fr_output, current_fr
+                )
+                output_frequency_responses[output_key] = {
+                    "f": f_output,
+                    "abs_fr": abs_output,
+                    "phase_fr": phase_output,
+                    "fr": fr_output,
+                }
+
+            aligned_output_key = self._amb_axis_key(ambs, i)
+            aligned_response = output_frequency_responses[aligned_output_key]
+            disp_fr = displacements_fr[:, i]
+            f = aligned_response["f"]
+            abs_fr = aligned_response["abs_fr"]
+            phase_fr = aligned_response["phase_fr"]
+            fr = aligned_response["fr"]
 
             model_magnitude, model_phase, _ = ct.frequency_response(
                 model, 2 * np.pi * f
@@ -560,8 +750,7 @@ class AmbSystemIdentification:
             fit_freq = self._frequency_response_fitness(fr, model_fr)
 
             # Store the computed data.
-            mma = ambs[i // 2]
-            key = f"{mma.tag} - v" if i % 2 else f"{mma.tag} - w"
+            key = self._amb_axis_key(ambs, i)
             models[key] = model
             fit["time"][key] = fit_time
             fit["freq"][key] = fit_freq
@@ -584,6 +773,14 @@ class AmbSystemIdentification:
                 "model_magnitude": np.squeeze(model_magnitude),
                 "model_phase": np.squeeze(model_phase),
             }
+            frequency_response[key] = {"outputs": output_frequency_responses}
+
+    @staticmethod
+    def _amb_axis_key(ambs, index):
+        """Return the existing direction key for a magnetic-bearing axis."""
+        amb = ambs[index // 2]
+        axis = "v" if index % 2 else "w"
+        return f"{amb.tag} - {axis}"
 
     @staticmethod
     def _frequency_response_fitness(reference, prediction):
