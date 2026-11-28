@@ -7,9 +7,8 @@ from ross import (
 )
 
 import numpy as np
-import control as ct
 
-from ross.bearings.magnetic.amb_controllers import s
+from ross.bearings.magnetic.amb_controllers import laplace_variable
 
 
 def rotor_example_amb_complex_controllers(ambs=True):
@@ -34,6 +33,10 @@ def rotor_example_amb_complex_controllers(ambs=True):
     >>> rotor_amb.ndof
     318
     """
+    import control as ct
+
+    s = laplace_variable()
+
     ## Shaft material creation ##
     steel = Material(name="steel", rho=7850, E=1.9e11, Poisson=0.30)
     steel_m12 = Material(name="steel", rho=7700, E=2e11, Poisson=0.31, color="red")

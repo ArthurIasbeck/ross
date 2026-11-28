@@ -33,6 +33,7 @@ from ross.seals.labyrinth_seal import *
 from ross.seals.holepattern_seal import *
 from ross.seals.hybrid_seal import *
 from ross.bearings.magnetic.amb_utils import *
+from ross.bearings.magnetic.amb_controllers import laplace_variable
 
 _pio.templates.default = "ross"
 if "ipykernel" in sys.modules:

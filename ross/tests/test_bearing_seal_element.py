@@ -15,6 +15,7 @@ from ross.bearing_seal_element import (
     MagneticBearingElement,
     RollerBearingElement,
 )
+from ross.bearings.magnetic.amb_controllers import laplace_variable
 from ross.units import Q_
 
 
@@ -425,7 +426,7 @@ def test_magnetic_bearing_with_lead_controller_matches_frequency_response():
     K = 2.0
     tau = 1e-3
     a = 0.2
-    s = MagneticBearingElement.s
+    s = laplace_variable()
     C_lead = K * (tau * s + 1) / (a * tau * s + 1)
 
     mb = MagneticBearingElement(

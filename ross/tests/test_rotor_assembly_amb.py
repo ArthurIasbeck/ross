@@ -3,6 +3,7 @@ import pytest
 from numpy.testing import assert_allclose, assert_equal
 
 from ross import SensitivityResults, MagneticBearingElement
+from ross.bearings.magnetic.amb_controllers import laplace_variable
 from ross.bearings.magnetic.amb_models import (
     rotor_example_amb_simple,
     rotor_example_amb_general_controllers,
@@ -180,7 +181,7 @@ def test_amb_generic_controller():
     kd = 10.0
     n_f = 10_000
 
-    s = MagneticBearingElement.s
+    s = laplace_variable()
     pid_controller = kp + ki / s + kd * s * (1 / (1 + (1 / n_f) * s))
 
     k_lead = 1

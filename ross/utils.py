@@ -2,7 +2,6 @@ import json
 import re
 import toml
 
-import control as ct
 import numpy as np
 import pandas as pd
 
@@ -1655,6 +1654,8 @@ def is_transfer_function_or_none(parameter, parameter_name):
     """
     if parameter is None:
         return None
+
+    import control as ct
 
     if not isinstance(parameter, ct.TransferFunction):
         raise ValueError(f"{parameter_name} must be None or a TransferFunction")

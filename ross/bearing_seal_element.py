@@ -4,7 +4,6 @@ This module defines the BearingElement classes which will be used to represent t
 bearings and seals.
 """
 
-import control as ct
 import numpy as np
 import warnings
 from inspect import signature
@@ -13,6 +12,7 @@ from numpy.polynomial import Polynomial
 from plotly import graph_objects as go
 from scipy import interpolate as interpolate
 
+from ross.bearings.magnetic.amb_controllers import laplace_variable
 from ross.element import Element
 from ross.plotly_theme import color_shades
 from ross.units import Q_, check_units
@@ -1927,8 +1927,6 @@ class MagneticBearingElement(BearingElement):
         True
     """
 
-    s = ct.TransferFunction.s
-
     def __init__(
         self,
         n,
@@ -2045,6 +2043,8 @@ class MagneticBearingElement(BearingElement):
 
         C_s = self.get_analog_controller()
         omega = frequency if frequency is not None else np.logspace(0, 4)
+        import control as ct
+
         mag, phase, _ = ct.frequency_response(C_s, omega)
         Hjw = (mag * np.exp(1j * phase)).squeeze()
         C_real = Hjw.real
@@ -2254,7 +2254,7 @@ class MagneticBearingElement(BearingElement):
         -----
         - If both a custom transfer function and PID gains are defined,
           the custom transfer function takes precedence.
-        - The Laplace variable 's' is obtained from MagneticBearingElement.s.
+        - The Laplace variable 's' is obtained from laplace_variable().
         - The output of this method is used in build_controller() to generate
           the corresponding discrete-time (sampled) version of the controller.
 
@@ -2286,13 +2286,15 @@ class MagneticBearingElement(BearingElement):
             self.controller_transfer_function_num is None
             or self.controller_transfer_function_den is None
         ):
-            s = MagneticBearingElement.s
+            s = laplace_variable()
             C_s = (
                 self.kp_pid
                 + self.ki_pid / s
                 + self.kd_pid * s * (1 / (1 + (1 / self.n_f) * s))
             )
         else:
+            import control as ct
+
             C_s = ct.TransferFunction(
                 self.controller_transfer_function_num,
                 self.controller_transfer_function_den,
@@ -2356,6 +2358,8 @@ class MagneticBearingElement(BearingElement):
         >>> mb.A_c.shape[0] == mb.x_c[0].shape[0]
         True
         """
+        import control as ct
+
         C_s = self.get_analog_controller()
         C_z = ct.sample_system(C_s, dt, method="tustin")
         C_z_ss = ct.ss(C_z)

@@ -1,16 +1,22 @@
-import control as ct
 import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-s = ct.TransferFunction.s
+
+def laplace_variable():
+    import control as ct
+
+    return ct.TransferFunction.s
 
 
 def pid(k_p, k_i, k_d, n_f=10000):
+    s = laplace_variable()
     return k_p + k_i / s + k_d * s * (1 / (1 + (1 / n_f) * s))
 
 
 def lqg(A, B, C, Q_lqr, R_lqr, Q_kalman, R_kalman):
+    import control as ct
+
     A = np.array(A, dtype=float)
     B = np.array(B, dtype=float)
     C = np.array(C, dtype=float)
@@ -32,6 +38,8 @@ def lqg(A, B, C, Q_lqr, R_lqr, Q_kalman, R_kalman):
 
 
 def lead_lag(tau, alpha, k=1.0):
+    import control as ct
+
     num = [k * tau, k]
     den = [alpha * tau, 1.0]
 
@@ -39,18 +47,24 @@ def lead_lag(tau, alpha, k=1.0):
 
 
 def second_order(b2, b1, b0, a1, a0):
+    import control as ct
+
     num = [b2, b1, b0]
     den = [1.0, a1, a0]
     return ct.tf(num, den)
 
 
 def low_pass_filter(w_c, k=1.0):
+    import control as ct
+
     num = [k * w_c]
     den = [1.0, w_c]
     return ct.tf(num, den)
 
 
 def notch_filter(w_n, zeta_z, zeta_p, k=1.0):
+    import control as ct
+
     num = [1.0, 2.0 * zeta_z * w_n, w_n**2]
     den = [1.0, 2.0 * zeta_p * w_n, w_n**2]
     return k * ct.tf(num, den)
@@ -65,6 +79,8 @@ def combine(*args):
 
 
 def plot_frequency_response(*systems, **kwargs):
+    import control as ct
+
     w_min = kwargs.get("w_min", 1e-2)
     w_max = kwargs.get("w_max", 1e3)
     n_points = kwargs.get("n_points", 1000)

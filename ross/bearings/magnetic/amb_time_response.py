@@ -3,7 +3,6 @@ import time
 import numpy as np
 from scipy import signal
 from scipy.linalg import eigh, block_diag
-import control as ct
 from copy import deepcopy
 
 from ross import MagneticBearingElement
@@ -173,6 +172,8 @@ class AmbTimeResponse:
         # Initialize lists
         self.a_c, self.b_c, self.c_c, self.d_c = [], [], [], []
         self.k_i, self.k_s, self.node = [], [], []
+
+        import control as ct
 
         for amb in magnetic_bearings:
             # Controller
